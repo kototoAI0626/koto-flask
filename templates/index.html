@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>箏符コンバーター — Koto.to</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--gold:#c8a96e;--deep:#9c7a3a;--ink:#1a1209;--ash:#8a7a68;--cream:#ede7d9;--bg:#0e0b06}
+body{font-family:'Hiragino Kaku Gothic ProN','Noto Sans JP',sans-serif;background:var(--bg);color:var(--cream);min-height:100vh}
+header{background:var(--ink);padding:14px 20px;text-align:center;border-bottom:1px solid #333}
+.logo{font-family:serif;font-size:20px;color:var(--gold);letter-spacing:.15em}
+.sub{font-size:11px;color:#555;letter-spacing:.15em;margin-top:2px}
+main{max-width:720px;margin:0 auto;padding:20px 16px 60px}
+.card{background:var(--ink);border:1px solid #333;border-radius:6px;margin-bottom:16px;overflow:hidden}
+.card-title{background:#221a10;padding:9px 16px;font-family:serif;font-size:11px;color:var(--gold);letter-spacing:.25em;border-bottom:1px solid #333}
+.card-body{padding:16px}
+/* ドロップゾーン */
+.drop-zone{border:2px dashed #444;border-radius:4px;padding:32px 16px;text-align:center;cursor:pointer;font-size:14px;color:#555;line-height:2;transition:all .15s}
+.drop-zone:hover,.drop-zone.drag-over{border-color:var(--gold);color:var(--ash)}
+.drop-zone.has-file{border-color:var(--gold);color:var(--gold)}
+.drop-icon{font-size:32px;margin-bottom:8px}
+.preview-img{width:100%;margin-top:10px;border:1px solid #333;border-radius:3px;display:block}
+/* プリセット */
+.preset-grid{display:flex;flex-wrap:wrap;gap:6px}
+.preset-btn{padding:6px 14px;background:#1a1209;border:1px solid #555;border-radius:3px;color:var(--ash);font-family:serif;font-size:13px;cursor:pointer;transition:all .12s}
+.preset-btn:hover{border-color:var(--gold);color:var(--gold)}
+.preset-btn.active{background:var(--deep);border-color:var(--gold);color:#f7f3ec}
+/* スライダー */
+.slider-row{display:flex;align-items:center;gap:10px;font-size:12px;color:var(--ash);margin-top:12px}
+input[type=range]{flex:1;accent-color:var(--gold)}
+/* ボタン */
+.btn{width:100%;padding:14px;background:var(--deep);border:1px solid var(--gold);border-radius:4px;color:#f7f3ec;font-family:serif;font-size:15px;cursor:pointer;letter-spacing:.1em;transition:all .15s;margin-top:8px}
+.btn:hover{background:var(--gold)}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.btn-sub{background:transparent;border-color:#444;color:var(--ash)}
+.btn-sub:hover{border-color:var(--gold);color:var(--gold);background:transparent}
+/* ローディング */
+.loading{display:none;text-align:center;padding:24px;color:var(--gold);font-size:13px}
+.spinner{width:24px;height:24px;border:3px solid #333;border-top-color:var(--gold);border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 10px}
+@keyframes spin{to{transform:rotate(360deg)}}
+/* メッセージ */
+.msg-ok{padding:10px 14px;background:#0e1a0e;border:1px solid #2a4a2a;color:#8be08b;border-radius:3px;font-size:12px;margin-bottom:12px}
+.msg-err{padding:10px 14px;background:#2a0a0a;border:1px solid #5a1a1a;color:#f08;border-radius:3px;font-size:12px;margin-bottom:12px}
+/* 結果画像 */
+.result-img{width:100%;display:block;border:1px solid #333;border-radius:3px}
+/* 凡例 */
+.legend{display:flex;gap:16px;flex-wrap:wrap;font-size:12px}
+.legend-item{display:flex;align-items:center;gap:6px;color:var(--ash)}
+.lk{font-family:serif;font-size:18px;font-weight:bold}
+@media print{header,.card:not(.result-card),.btn{display:none!important}body{background:#fff}.result-img{width:100%;border:none}}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">箏符コンバーター</div>
+  <div class="sub">楽譜画像をアップロードするだけで箏符を自動付与 — Koto.to</div>
+</header>
+<main>
+
+  <!-- 楽譜アップロード -->
+  <div class="card">
+    <div class="card-title">① 楽譜画像をアップロード</div>
+    <div class="card-body">
+      <div class="drop-zone" id="drop-zone" onclick="document.getElementById('file-input').click()">
+        <div class="drop-icon">📄</div>
+        <div id="file-label">タップして楽譜を選択</div>
+        <div style="font-size:11px;color:#444;margin-top:4px">JPG・PNG対応</div>
+      </div>
+      <input type="file" id="file-input" accept="image/*" style="display:none" onchange="onFile(event)">
+      <img id="preview" class="preview-img" style="display:none">
+    </div>
+  </div>
+
+  <!-- 調弦設定 -->
+  <div class="card">
+    <div class="card-title">② 調弦を選択</div>
+    <div class="card-body">
+      <div class="preset-grid" id="preset-grid">
+        {% for name in presets %}
+        <button class="preset-btn {% if name=='C調' %}active{% endif %}"
+                onclick="selectPreset('{{name}}',this)">{{name}}</button>
+        {% endfor %}
+      </div>
+      <div class="slider-row" style="margin-top:14px">
+        <span>漢字サイズ</span>
+        <input type="range" id="font-size" min="12" max="30" value="20">
+        <span id="fs-val">20px</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- 変換ボタン -->
+  <button class="btn" id="convert-btn" onclick="convert()" disabled>
+    🎵 箏符を自動付与する
+  </button>
+
+  <!-- ローディング -->
+  <div class="loading" id="loading">
+    <div class="spinner"></div>
+    音符を自動検出して箏符を付与中...（10〜30秒）
+  </div>
+
+  <!-- 結果 -->
+  <div id="result-area"></div>
+
+  <!-- 凡例 -->
+  <div class="card">
+    <div class="card-title">記号の凡例</div>
+    <div class="card-body">
+      <div class="legend">
+        <div class="legend-item"><span class="lk" style="color:#c8a96e">五</span>開放弦</div>
+        <div class="legend-item"><span class="lk" style="color:#1a6aaa">五△</span>弱押し（半音上）</div>
+        <div class="legend-item"><span class="lk" style="color:#7a1aaa">五▲</span>強押し（全音上）</div>
+      </div>
+    </div>
+  </div>
+
+</main>
+<script>
+let currentFile=null, preset='C調', resultData=null;
+
+const dz=document.getElementById('drop-zone');
+dz.addEventListener('dragover',e=>{e.preventDefault();dz.classList.add('drag-over')});
+dz.addEventListener('dragleave',()=>dz.classList.remove('drag-over'));
+dz.addEventListener('drop',e=>{e.preventDefault();dz.classList.remove('drag-over');const f=e.dataTransfer.files[0];if(f)loadFile(f)});
+
+function onFile(e){const f=e.target.files[0];if(f)loadFile(f)}
+
+function loadFile(f){
+  currentFile=f;
+  dz.classList.add('has-file');
+  document.getElementById('file-label').textContent='✅ '+f.name;
+  const reader=new FileReader();
+  reader.onload=ev=>{const img=document.getElementById('preview');img.src=ev.target.result;img.style.display='block'};
+  reader.readAsDataURL(f);
+  document.getElementById('convert-btn').disabled=false;
+}
+
+function selectPreset(name,btn){
+  preset=name;
+  document.querySelectorAll('.preset-btn').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+}
+
+document.getElementById('font-size').addEventListener('input',function(){
+  document.getElementById('fs-val').textContent=this.value+'px';
+});
+
+async function convert(){
+  if(!currentFile) return;
+  document.getElementById('loading').style.display='block';
+  document.getElementById('result-area').innerHTML='';
+  document.getElementById('convert-btn').disabled=true;
+
+  try{
+    const fd=new FormData();
+    fd.append('image',currentFile);
+    fd.append('tuning',preset);
+    fd.append('font_size',document.getElementById('font-size').value);
+    const res=await fetch('/process',{method:'POST',body:fd});
+    const data=await res.json();
+    document.getElementById('loading').style.display='none';
+    if(data.error){
+      document.getElementById('result-area').innerHTML=`<div class="msg-err">❌ ${data.error}</div>`;
+    } else {
+      resultData=data.image;
+      document.getElementById('result-area').innerHTML=`
+        <div class="msg-ok">✅ ${data.message}</div>
+        <div class="card result-card">
+          <div class="card-title">箏符プレビュー（${preset}）</div>
+          <div class="card-body" style="padding:8px">
+            <img src="${data.image}" class="result-img">
+          </div>
+        </div>
+        <button class="btn" onclick="download()">⬇ 画像をダウンロード</button>
+        <button class="btn btn-sub" onclick="window.print()" style="margin-top:6px">🖨 印刷</button>
+      `;
+    }
+  }catch(e){
+    document.getElementById('loading').style.display='none';
+    document.getElementById('result-area').innerHTML=`<div class="msg-err">❌ 通信エラー: ${e.message}</div>`;
+  }
+  document.getElementById('convert-btn').disabled=false;
+}
+
+function download(){
+  if(!resultData) return;
+  const a=document.createElement('a');
+  a.href=resultData;
+  a.download='箏符楽譜.jpg';
+  a.click();
+}
+</script>
+</body>
+</html>
