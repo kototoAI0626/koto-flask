@@ -26,6 +26,13 @@ main{max-width:720px;margin:0 auto;padding:20px 16px 60px}
 .preset-btn{padding:6px 14px;background:#1a1209;border:1px solid #555;border-radius:3px;color:var(--ash);font-family:serif;font-size:13px;cursor:pointer;transition:all .12s}
 .preset-btn:hover{border-color:var(--gold);color:var(--gold)}
 .preset-btn.active{background:var(--deep);border-color:var(--gold);color:#f7f3ec}
+/* 移調ボタン */
+.transpose-row{display:flex;align-items:center;gap:8px;margin-top:14px;flex-wrap:wrap}
+.transpose-label{font-size:12px;color:var(--ash);white-space:nowrap}
+.tr-btn{padding:5px 10px;background:#1a1209;border:1px solid #555;border-radius:3px;color:var(--ash);font-size:13px;cursor:pointer;transition:all .12s;min-width:32px;text-align:center}
+.tr-btn:hover{border-color:var(--gold);color:var(--gold)}
+.tr-btn.active{background:var(--deep);border-color:var(--gold);color:#f7f3ec}
+.tr-display{font-family:serif;font-size:14px;color:var(--gold);min-width:60px;text-align:center;padding:4px 8px;border:1px solid #444;border-radius:3px;background:#0e0b06}
 /* スライダー */
 .slider-row{display:flex;align-items:center;gap:10px;font-size:12px;color:var(--ash);margin-top:12px}
 input[type=range]{flex:1;accent-color:var(--gold)}
@@ -48,6 +55,8 @@ input[type=range]{flex:1;accent-color:var(--gold)}
 .legend{display:flex;gap:16px;flex-wrap:wrap;font-size:12px}
 .legend-item{display:flex;align-items:center;gap:6px;color:var(--ash)}
 .lk{font-family:serif;font-size:18px;font-weight:bold}
+/* 移調ヒント */
+.tr-hint{font-size:11px;color:#555;margin-top:8px;line-height:1.6}
 @media print{header,.card:not(.result-card),.btn{display:none!important}body{background:#fff}.result-img{width:100%;border:none}}
 </style>
 </head>
@@ -90,6 +99,25 @@ input[type=range]{flex:1;accent-color:var(--gold)}
     </div>
   </div>
 
+  <!-- 移調設定 -->
+  <div class="card">
+    <div class="card-title">③ 移調（楽譜と箏の調が違う場合）</div>
+    <div class="card-body">
+      <div class="transpose-row">
+        <span class="transpose-label">半音ずらし：</span>
+        <button class="tr-btn" onclick="changeTranspose(-1)">−</button>
+        <span class="tr-display" id="tr-display">0（そのまま）</span>
+        <button class="tr-btn" onclick="changeTranspose(+1)">＋</button>
+        <button class="tr-btn" onclick="resetTranspose()" style="font-size:11px;padding:5px 8px">リセット</button>
+      </div>
+      <div class="tr-hint">
+        例：楽譜がC調・箏がD調の場合 → ＋2<br>
+        例：楽譜がG調・箏がF調の場合 → −2<br>
+        ＋方向：楽譜より箏が高い調弦 ／ −方向：楽譜より箏が低い調弦
+      </div>
+    </div>
+  </div>
+
   <!-- 変換ボタン -->
   <button class="btn" id="convert-btn" onclick="convert()" disabled>
     🎵 箏符を自動付与する
@@ -118,7 +146,7 @@ input[type=range]{flex:1;accent-color:var(--gold)}
 
 </main>
 <script>
-let currentFile=null, preset='C調', resultData=null;
+let currentFile=null, preset='C調', resultData=null, transposeVal=0;
 
 const dz=document.getElementById('drop-zone');
 dz.addEventListener('dragover',e=>{e.preventDefault();dz.classList.add('drag-over')});
@@ -147,6 +175,23 @@ document.getElementById('font-size').addEventListener('input',function(){
   document.getElementById('fs-val').textContent=this.value+'px';
 });
 
+function changeTranspose(delta){
+  transposeVal = Math.max(-12, Math.min(12, transposeVal + delta));
+  updateTransposeDisplay();
+}
+
+function resetTranspose(){
+  transposeVal=0;
+  updateTransposeDisplay();
+}
+
+function updateTransposeDisplay(){
+  const el=document.getElementById('tr-display');
+  if(transposeVal===0) el.textContent='0（そのまま）';
+  else if(transposeVal>0) el.textContent='+'+transposeVal+' 半音高く';
+  else el.textContent=transposeVal+' 半音低く';
+}
+
 async function convert(){
   if(!currentFile) return;
   document.getElementById('loading').style.display='block';
@@ -158,9 +203,11 @@ async function convert(){
     fd.append('image',currentFile);
     fd.append('tuning',preset);
     fd.append('font_size',document.getElementById('font-size').value);
+    fd.append('transpose',transposeVal);
     const res=await fetch('/process',{method:'POST',body:fd});
     const data=await res.json();
     document.getElementById('loading').style.display='none';
+    const trLabel = transposeVal!==0 ? `・移調${transposeVal>0?'+':''}${transposeVal}半音` : '';
     if(data.error){
       document.getElementById('result-area').innerHTML=`<div class="msg-err">❌ ${data.error}</div>`;
     } else {
@@ -168,7 +215,7 @@ async function convert(){
       document.getElementById('result-area').innerHTML=`
         <div class="msg-ok">✅ ${data.message}</div>
         <div class="card result-card">
-          <div class="card-title">箏符プレビュー（${preset}）</div>
+          <div class="card-title">箏符プレビュー（${preset}${trLabel}）</div>
           <div class="card-body" style="padding:8px">
             <img src="${data.image}" class="result-img">
           </div>

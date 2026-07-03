@@ -36,13 +36,20 @@ def note_to_midi(note, octave):
     n = ENHARMONIC.get(note, note)
     return (int(octave)+1)*12 + CHROMATIC.index(n)
 
-def build_midi_map(tuning):
+def build_midi_map(tuning, transpose=0):
+    """
+    調弦マップを構築する。
+    transpose: 半音単位の移調量（+なら高く、-なら低く）
+    例：楽譜がC調で箏がD調なら transpose=+2
+    """
     m = {}
     for i,(note,octave) in enumerate(tuning):
         midi = note_to_midi(note, octave)
-        m[midi] = (STRING_KANJI[i], '')
-        m[midi+1] = (STRING_KANJI[i], '△')
-        m[midi+2] = (STRING_KANJI[i], '▲')
+        # 移調分だけシフト：楽譜上の音(midi-transpose)が弦iに対応
+        base = midi - transpose
+        m[base] = (STRING_KANJI[i], '')
+        m[base+1] = (STRING_KANJI[i], '△')
+        m[base+2] = (STRING_KANJI[i], '▲')
     return m
 
 def detect_staves(binary, W):
@@ -66,18 +73,28 @@ def detect_staves(binary, W):
     return staves[::2]  # ト音記号段のみ
 
 def find_clef_end(stave, binary, W):
+    """
+    ト音記号・調号・拍子記号エリアの右端を検出する。
+    改善：小節線の検出に加え、最低でも15%の幅を確保する。
+    """
     y1,y2=stave[0]-2,stave[4]+2
     cs=np.sum(binary[y1:y2,:],axis=0)/255
     th=(y2-y1)*0.65
     vc=np.where(cs>th)[0]
+    # 左端6%より右にある縦線を探す
     valid=vc[vc>int(W*0.06)]
-    if len(valid)==0: return int(W*0.13)
+    if len(valid)==0:
+        return int(W*0.18)  # デフォルト18%
     gps,cu=[],[valid[0]]
     for x in valid[1:]:
         if x-cu[-1]<=8: cu.append(x)
         else: gps.append(cu); cu=[x]
     gps.append(cu)
-    return int(np.mean(gps[0]))+8
+    # 最初の縦線グループ（小節線）の右端 + 余白
+    clef_end = int(np.mean(gps[0])) + 12
+    # 最低でも幅の15%は除外（ト音記号・調号が確実に含まれる範囲）
+    min_clef_end = int(W * 0.15)
+    return max(clef_end, min_clef_end)
 
 def y_to_pitch(cy, stave):
     gap=np.mean([stave[j+1]-stave[j] for j in range(4)])
@@ -87,7 +104,40 @@ def y_to_pitch(cy, stave):
     nearest=min(steps,key=lambda s:abs(s-step))
     return STEP_TO_PITCH[nearest]
 
-def process_image(img_bytes, tuning_name, font_size=20):
+def is_notehead(cnt, gap):
+    """
+    輪郭が符頭（音符の玉）かどうかを判定する。
+    ト音記号の曲線部分を除外するため、より厳密な判定を行う。
+    """
+    x,y,w,h = cv2.boundingRect(cnt)
+    area = cv2.contourArea(cnt)
+    aspect = w/h if h>0 else 0
+
+    # サイズフィルタ：符頭は五線間隔の0.5〜2.0倍程度
+    if not(gap*0.5 <= w <= gap*2.0): return False
+    if not(gap*0.35 <= h <= gap*1.5): return False
+
+    # アスペクト比：符頭は横長楕円（0.7〜2.2）
+    if not(0.7 <= aspect <= 2.2): return False
+
+    # 面積フィルタ：小さすぎる輪郭は除外
+    if area < gap*gap*0.22: return False
+
+    # 充填率フィルタ：符頭は比較的詰まった形（円・楕円）
+    # ト音記号の曲線部分は細長く充填率が低い
+    fill_ratio = area / (w * h) if w*h > 0 else 0
+    if fill_ratio < 0.35: return False  # 充填率35%未満は除外
+
+    # 凸性フィルタ：符頭は凸に近い形
+    hull = cv2.convexHull(cnt)
+    hull_area = cv2.contourArea(hull)
+    if hull_area > 0:
+        solidity = area / hull_area
+        if solidity < 0.55: return False  # 凸性55%未満は除外
+
+    return True
+
+def process_image(img_bytes, tuning_name, transpose=0, font_size=20):
     nparr=np.frombuffer(img_bytes,np.uint8)
     img_cv=cv2.imdecode(nparr,cv2.IMREAD_GRAYSCALE)
     H,W=img_cv.shape
@@ -111,7 +161,7 @@ def process_image(img_bytes, tuning_name, font_size=20):
     contours,_=cv2.findContours(bn_clean,cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)
 
     tuning=PRESETS.get(tuning_name,PRESETS['C調'])
-    midi_map=build_midi_map(tuning)
+    midi_map=build_midi_map(tuning, transpose)
 
     notes=[]
     for si,stave in enumerate(treble_staves):
@@ -125,11 +175,8 @@ def process_image(img_bytes, tuning_name, font_size=20):
             cx,cy=x+w//2,y+h//2
             if not(y_top<=cy<=y_bot): continue
             if cx<clef_end: continue
-            area=cv2.contourArea(cnt)
-            aspect=w/h if h>0 else 0
-            if not(gap*0.6<=w<=gap*2.2 and gap*0.4<=h<=gap*1.6): continue
-            if not(0.6<=aspect<=2.5): continue
-            if area<gap*gap*0.2: continue
+            # 改善された符頭判定
+            if not is_notehead(cnt, gap): continue
             pitch=y_to_pitch(cy,stave)
             midi=note_to_midi(pitch[:-1],int(pitch[-1]))
             if midi in midi_map:
@@ -166,7 +213,8 @@ def process_image(img_bytes, tuning_name, font_size=20):
         drawn+=1
 
     result=Image.alpha_composite(img_pil,overlay).convert('RGB')
-    return result, f"{drawn}個の音符を自動検出して箏符を付与しました"
+    transpose_str = f'（移調{transpose:+d}半音）' if transpose != 0 else ''
+    return result, f"{drawn}個の音符を自動検出して箏符を付与しました{transpose_str}"
 
 @app.route('/')
 def index():
@@ -178,10 +226,11 @@ def process():
         file=request.files.get('image')
         tuning=request.form.get('tuning','C調')
         font_size=int(request.form.get('font_size',20))
+        transpose=int(request.form.get('transpose',0))
         if not file:
             return jsonify({'error':'画像が必要です'}),400
         img_bytes=file.read()
-        result,msg=process_image(img_bytes,tuning,font_size)
+        result,msg=process_image(img_bytes,tuning,transpose,font_size)
         if result is None:
             return jsonify({'error':msg}),400
         buf=io.BytesIO()
