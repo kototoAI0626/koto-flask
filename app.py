@@ -205,7 +205,15 @@ def extract_used_pitches_from_page(img_bytes):
     return used_midi
 
 def suggest_tuning(used_midi):
-    """全ページの使用音から最適調弦を提案"""
+    """
+    全ページの使用音から最適調弦を提案する。
+    箏で出せる音の範囲：
+      - 開放弦（そのまま）
+      - 弱押し（半音上）
+      - 強押し（全音上）
+      - 柱を移動して音域を拡張（各弦±2半音の範囲でカバー可能とみなす）
+    対応できない音が出ないよう、カバー率を最大化する調弦を選ぶ。
+    """
     if not used_midi:
         return 'G調', []
     best_name = None
@@ -216,12 +224,16 @@ def suggest_tuning(used_midi):
         available = set()
         for note, octave in tuning:
             m = note_to_midi(note, octave)
+            # 開放弦・弱押し・強押し
             available.add(m)
             available.add(m+1)
             available.add(m+2)
+            # 柱を少し動かして対応できる範囲（±1半音）
+            available.add(m-1)
         matched = used_midi & available
         unmatched = used_midi - available
-        score = len(matched) - len(unmatched) * 2
+        # 未対応音が0になることを最優先、次にマッチ数を最大化
+        score = len(matched) * 10 - len(unmatched) * 100
         if score > best_score:
             best_score = score
             best_name = name
@@ -400,20 +412,21 @@ def process_multi():
                 'tuning_display': get_tuning_display(tuning),
             })
 
-        # 複数ページはZIPで返す
-        zip_buf = io.BytesIO()
-        with zipfile.ZipFile(zip_buf, 'w', zipfile.ZIP_DEFLATED) as zf:
-            for i, img_data in enumerate(results):
-                if img_data is not None:
-                    zf.writestr(f'箏符楽譜_p{i+1:02d}.jpg', img_data)
-        zip_buf.seek(0)
-        zip_b64 = base64.b64encode(zip_buf.read()).decode()
+        # 複数ページ：ページごとにbase64画像の配列で返す
+        images_b64 = []
+        for i, img_data in enumerate(results):
+            if img_data is not None:
+                images_b64.append({
+                    'page': i + 1,
+                    'image': f'data:image/jpeg;base64,{base64.b64encode(img_data).decode()}',
+                    'filename': f'箏符楽譜_p{i+1:02d}.jpg',
+                })
         tr_str = f'（移調{transpose:+d}半音）' if transpose != 0 else ''
         return jsonify({
             'success': True,
             'mode': 'multi',
-            'zip': f'data:application/zip;base64,{zip_b64}',
-            'page_count': len([r for r in results if r is not None]),
+            'images': images_b64,
+            'page_count': len(images_b64),
             'message': f'{len(files)}ページ・{total_notes}個の音符を検出して箏符を付与しました{tr_str}',
             'tuning_display': get_tuning_display(tuning),
         })

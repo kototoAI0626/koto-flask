@@ -305,6 +305,9 @@ async function analyzeScore() {
   }
 }
 
+// ページ別画像データを保持
+let pageImages = [];
+
 async function convert() {
   if (currentFiles.length === 0) return;
   document.getElementById('loading').style.display = 'block';
@@ -312,7 +315,7 @@ async function convert() {
   document.getElementById('convert-btn').disabled = true;
   const isMulti = currentFiles.length > 1;
   document.getElementById('loading-msg').textContent = isMulti
-    ? `${currentFiles.length}ページの音符を検出して箏符を付与中...`
+    ? `${currentFiles.length}ページの音符を検出して箏符を付与中...（しばらくお待ちください）`
     : '音符を自動検出して箏符を付与中...（10〜30秒）';
 
   try {
@@ -322,8 +325,7 @@ async function convert() {
     fd.append('font_size', document.getElementById('font-size').value);
     fd.append('transpose', transposeVal);
 
-    const endpoint = isMulti ? '/process_multi' : '/process_multi';
-    const res = await fetch(endpoint, { method: 'POST', body: fd });
+    const res = await fetch('/process_multi', { method: 'POST', body: fd });
     const data = await res.json();
     document.getElementById('loading').style.display = 'none';
 
@@ -331,36 +333,48 @@ async function convert() {
 
     if (data.error) {
       document.getElementById('result-area').innerHTML = `<div class="msg-err">❌ ${data.error}</div>`;
-    } else if (data.mode === 'single') {
-      const tdHtml = data.tuning_display
-        ? data.tuning_display.map(t => `<span class="tuning-item"><span class="ks">${t.string}</span>=<span class="kn">${t.note}</span></span>`).join('')
-        : '';
+      return;
+    }
+
+    // 共通: 調弦表HTML
+    const tdHtml = data.tuning_display
+      ? data.tuning_display.map(t => `<span class="tuning-item"><span class="ks">${t.string}</span>=<span class="kn">${t.note}</span></span>`).join('')
+      : '';
+
+    if (data.mode === 'single') {
+      pageImages = [{ page: 1, image: data.image, filename: '箏符楽譜.jpg' }];
       document.getElementById('result-area').innerHTML = `
         <div class="msg-ok">✅ ${data.message}</div>
+        ${tdHtml ? `<div class="tuning-row" style="margin-bottom:8px;padding:6px 8px;background:var(--ink);border:1px solid #333;border-radius:3px">${tdHtml}</div>` : ''}
         <div class="card result-card">
           <div class="card-title">箏符プレビュー（${preset}${trLabel}）</div>
           <div class="card-body" style="padding:8px">
-            ${tdHtml ? `<div class="tuning-row" style="margin-bottom:8px;padding:6px 8px;background:#0e0b06;border-radius:3px">${tdHtml}</div>` : ''}
-            <img src="${data.image}" class="result-img">
+            <img src="${data.image}" class="result-img" id="page-img-1">
           </div>
         </div>
-        <button class="btn" onclick="downloadSingle('${data.image}')">⬇ 画像をダウンロード</button>
-        <button class="btn btn-sub" onclick="window.print()" style="margin-top:6px">🖨 印刷</button>
+        <button class="btn" onclick="downloadPage(0)">⬇ ダウンロード</button>
+        <button class="btn btn-sub" onclick="printAll()" style="margin-top:6px">🖨 印刷</button>
       `;
     } else {
-      // 複数ページ：ZIPダウンロード
+      // 複数ページ：ページごとにプレビュー＋個別ダウンロード
+      pageImages = data.images;
+      let pagesHtml = '';
+      data.images.forEach((pg, idx) => {
+        pagesHtml += `
+          <div class="card result-card" style="margin-bottom:10px">
+            <div class="card-title">p${pg.page}（${preset}${trLabel}）</div>
+            <div class="card-body" style="padding:8px">
+              <img src="${pg.image}" class="result-img" id="page-img-${idx}">
+            </div>
+          </div>
+          <button class="btn" onclick="downloadPage(${idx})" style="margin-bottom:6px">⬇ p${pg.page} をダウンロード</button>
+        `;
+      });
       document.getElementById('result-area').innerHTML = `
         <div class="msg-ok">✅ ${data.message}</div>
-        <div class="card">
-          <div class="card-title">処理完了（${preset}${trLabel}）</div>
-          <div class="card-body">
-            <p style="font-size:13px;color:var(--ash);margin-bottom:12px">
-              ${data.page_count}ページ分の箏符楽譜をZIPファイルにまとめました。<br>
-              ダウンロードして各ページをご確認ください。
-            </p>
-            <button class="btn" onclick="downloadZip('${data.zip}')">⬇ 全ページをZIPでダウンロード</button>
-          </div>
-        </div>
+        ${tdHtml ? `<div class="tuning-row" style="margin-bottom:8px;padding:6px 8px;background:var(--ink);border:1px solid #333;border-radius:3px">${tdHtml}</div>` : ''}
+        <button class="btn" onclick="printAll()" style="margin-bottom:12px">🖨 全ページ印刷</button>
+        ${pagesHtml}
       `;
     }
   } catch (e) {
@@ -370,18 +384,28 @@ async function convert() {
   document.getElementById('convert-btn').disabled = false;
 }
 
-function downloadSingle(dataUrl) {
+function downloadPage(idx) {
+  const pg = pageImages[idx];
+  if (!pg) return;
   const a = document.createElement('a');
-  a.href = dataUrl;
-  a.download = '箏符楽譜.jpg';
+  a.href = pg.image;
+  a.download = pg.filename || `箏符楽譜_p${idx+1}.jpg`;
   a.click();
 }
 
-function downloadZip(dataUrl) {
-  const a = document.createElement('a');
-  a.href = dataUrl;
-  a.download = '箏符楽譜_全ページ.zip';
-  a.click();
+function printAll() {
+  // 全ページを印刷用ウィンドウで開く
+  const w = window.open('', '_blank');
+  let imgs = pageImages.map((pg, i) =>
+    `<div style="page-break-after:${i < pageImages.length-1 ? 'always' : 'avoid'};text-align:center;">
+      <img src="${pg.image}" style="max-width:100%;height:auto;">
+    </div>`
+  ).join('');
+  w.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8">
+    <title>箏符楽譜</title>
+    <style>body{margin:0;padding:0}@media print{@page{margin:5mm}}</style>
+    </head><body>${imgs}<script>window.onload=function(){window.print();}<\/script></body></html>`);
+  w.document.close();
 }
 </script>
 </body>
