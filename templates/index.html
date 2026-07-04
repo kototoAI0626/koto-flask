@@ -15,20 +15,29 @@ main{max-width:720px;margin:0 auto;padding:20px 16px 60px}
 .card{background:var(--ink);border:1px solid #333;border-radius:6px;margin-bottom:16px;overflow:hidden}
 .card-title{background:#221a10;padding:9px 16px;font-family:serif;font-size:11px;color:var(--gold);letter-spacing:.25em;border-bottom:1px solid #333}
 .card-body{padding:16px}
-.drop-zone{border:2px dashed #444;border-radius:4px;padding:32px 16px;text-align:center;cursor:pointer;font-size:14px;color:#555;line-height:2;transition:all .15s}
+/* ドロップゾーン */
+.drop-zone{border:2px dashed #444;border-radius:4px;padding:28px 16px;text-align:center;cursor:pointer;font-size:14px;color:#555;line-height:1.8;transition:all .15s}
 .drop-zone:hover,.drop-zone.drag-over{border-color:var(--gold);color:var(--ash)}
 .drop-zone.has-file{border-color:var(--gold);color:var(--gold)}
-.drop-icon{font-size:32px;margin-bottom:8px}
-.preview-img{width:100%;margin-top:10px;border:1px solid #333;border-radius:3px;display:block}
-/* 自動提案ボタン */
+.drop-icon{font-size:28px;margin-bottom:6px}
+/* ページリスト */
+.page-list{margin-top:10px;display:none}
+.page-item{display:flex;align-items:center;justify-content:space-between;padding:5px 8px;background:#0e0b06;border:1px solid #333;border-radius:3px;margin-bottom:4px;font-size:12px;color:var(--ash)}
+.page-item .pg-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.page-item .pg-num{color:#555;font-size:11px;margin-right:8px;white-space:nowrap}
+.page-item .pg-del{color:#555;cursor:pointer;padding:0 4px;font-size:14px}
+.page-item .pg-del:hover{color:#f08}
+.page-count{font-size:11px;color:var(--ash);margin-top:6px}
+/* 分析ボタン */
 .analyze-btn{width:100%;padding:11px;background:#0e1a0e;border:1px solid #2a5a2a;border-radius:4px;color:#8be08b;font-family:serif;font-size:13px;cursor:pointer;letter-spacing:.1em;transition:all .15s;margin-top:10px}
 .analyze-btn:hover{background:#1a3a1a;border-color:#4a9a4a}
 .analyze-btn:disabled{opacity:.5;cursor:not-allowed}
 /* 提案結果 */
 .suggest-box{margin-top:12px;padding:12px;background:#0a140a;border:1px solid #2a4a2a;border-radius:4px;display:none}
-.suggest-title{font-size:11px;color:#4a9a4a;letter-spacing:.2em;margin-bottom:8px}
-.suggest-name{font-family:serif;font-size:16px;color:var(--gold);margin-bottom:10px}
-.tuning-grid{display:grid;grid-template-columns:repeat(13,1fr);gap:3px;margin-top:6px}
+.suggest-title{font-size:11px;color:#4a9a4a;letter-spacing:.2em;margin-bottom:6px}
+.suggest-name{font-family:serif;font-size:16px;color:var(--gold);margin-bottom:8px}
+.suggest-pages{font-size:11px;color:#555;margin-bottom:8px}
+.tuning-grid{display:grid;grid-template-columns:repeat(13,1fr);gap:3px}
 .tuning-cell{text-align:center;font-size:10px;color:var(--ash)}
 .tuning-string{font-family:serif;font-size:13px;color:var(--gold);display:block}
 .tuning-note{font-size:11px;color:#aaa;display:block;margin-top:1px}
@@ -42,16 +51,15 @@ main{max-width:720px;margin:0 auto;padding:20px 16px 60px}
 .tuning-display{margin-top:12px;padding:10px 12px;background:#0e0b06;border:1px solid #333;border-radius:3px}
 .tuning-display-title{font-size:10px;color:#555;letter-spacing:.2em;margin-bottom:6px}
 .tuning-row{display:flex;flex-wrap:wrap;gap:6px}
-.tuning-item{font-size:12px;color:var(--ash)}
 .tuning-item .ks{font-family:serif;color:var(--gold)}
 .tuning-item .kn{color:#ccc}
+.tuning-item{font-size:12px;color:var(--ash)}
 /* 移調 */
 .transpose-row{display:flex;align-items:center;gap:8px;margin-top:14px;flex-wrap:wrap}
 .transpose-label{font-size:12px;color:var(--ash);white-space:nowrap}
 .tr-btn{padding:5px 10px;background:#1a1209;border:1px solid #555;border-radius:3px;color:var(--ash);font-size:13px;cursor:pointer;transition:all .12s;min-width:32px;text-align:center}
 .tr-btn:hover{border-color:var(--gold);color:var(--gold)}
 .tr-display{font-family:serif;font-size:14px;color:var(--gold);min-width:70px;text-align:center;padding:4px 8px;border:1px solid #444;border-radius:3px;background:#0e0b06}
-/* スライダー */
 .slider-row{display:flex;align-items:center;gap:10px;font-size:12px;color:var(--ash);margin-top:12px}
 input[type=range]{flex:1;accent-color:var(--gold)}
 /* ボタン */
@@ -82,23 +90,26 @@ input[type=range]{flex:1;accent-color:var(--gold)}
 
   <!-- 楽譜アップロード -->
   <div class="card">
-    <div class="card-title">① 楽譜画像をアップロード</div>
+    <div class="card-title">① 楽譜画像をアップロード（複数ページ対応）</div>
     <div class="card-body">
       <div class="drop-zone" id="drop-zone" onclick="document.getElementById('file-input').click()">
         <div class="drop-icon">📄</div>
         <div id="file-label">タップして楽譜を選択</div>
-        <div style="font-size:11px;color:#444;margin-top:4px">JPG・PNG対応</div>
+        <div style="font-size:11px;color:#444;margin-top:4px">JPG・PNG対応 ／ 複数ページは複数枚選択可</div>
       </div>
-      <input type="file" id="file-input" accept="image/*" style="display:none" onchange="onFile(event)">
-      <img id="preview" class="preview-img" style="display:none">
-      <!-- 自動分析ボタン -->
+      <input type="file" id="file-input" accept="image/*" multiple style="display:none" onchange="onFile(event)">
+      <!-- ページリスト -->
+      <div class="page-list" id="page-list"></div>
+      <div class="page-count" id="page-count"></div>
+      <!-- 分析ボタン -->
       <button class="analyze-btn" id="analyze-btn" onclick="analyzeScore()" disabled>
-        🔍 楽譜を分析して調弦を自動提案
+        🔍 全ページを分析して調弦を自動提案
       </button>
       <!-- 提案結果 -->
       <div class="suggest-box" id="suggest-box">
         <div class="suggest-title">▶ 自動提案</div>
         <div class="suggest-name" id="suggest-name">—</div>
+        <div class="suggest-pages" id="suggest-pages"></div>
         <div class="tuning-grid" id="suggest-tuning-grid"></div>
         <div class="unmatched-warn" id="unmatched-warn"></div>
       </div>
@@ -115,12 +126,10 @@ input[type=range]{flex:1;accent-color:var(--gold)}
                 onclick="selectPreset('{{name}}',this)">{{name}}</button>
         {% endfor %}
       </div>
-      <!-- 調弦の音一覧 -->
       <div class="tuning-display" id="tuning-display">
         <div class="tuning-display-title">現在の調弦（チューナー用）</div>
         <div class="tuning-row" id="tuning-row"></div>
       </div>
-      <!-- 移調 -->
       <div class="transpose-row">
         <span class="transpose-label">移調：</span>
         <button class="tr-btn" onclick="changeTranspose(-1)">−</button>
@@ -129,7 +138,6 @@ input[type=range]{flex:1;accent-color:var(--gold)}
         <button class="tr-btn" onclick="resetTranspose()" style="font-size:11px;padding:5px 8px">リセット</button>
       </div>
       <div class="tr-hint">＋：楽譜より箏が高い調弦 ／ −：楽譜より箏が低い調弦</div>
-      <!-- 漢字サイズ -->
       <div class="slider-row" style="margin-top:14px">
         <span>漢字サイズ</span>
         <input type="range" id="font-size" min="12" max="30" value="20">
@@ -145,7 +153,7 @@ input[type=range]{flex:1;accent-color:var(--gold)}
 
   <div class="loading" id="loading">
     <div class="spinner"></div>
-    音符を自動検出して箏符を付与中...（10〜30秒）
+    <span id="loading-msg">音符を自動検出して箏符を付与中...</span>
   </div>
 
   <div id="result-area"></div>
@@ -164,137 +172,170 @@ input[type=range]{flex:1;accent-color:var(--gold)}
 
 </main>
 <script>
-let currentFile=null, preset='G調', resultData=null, transposeVal=0;
-
-// 調弦データをサーバーから取得してキャッシュ
+let currentFiles = [], preset = 'G調', transposeVal = 0;
 const tuningCache = {};
 
-const dz=document.getElementById('drop-zone');
-dz.addEventListener('dragover',e=>{e.preventDefault();dz.classList.add('drag-over')});
-dz.addEventListener('dragleave',()=>dz.classList.remove('drag-over'));
-dz.addEventListener('drop',e=>{e.preventDefault();dz.classList.remove('drag-over');const f=e.dataTransfer.files[0];if(f)loadFile(f)});
+const dz = document.getElementById('drop-zone');
+dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag-over') });
+dz.addEventListener('dragleave', () => dz.classList.remove('drag-over'));
+dz.addEventListener('drop', e => {
+  e.preventDefault(); dz.classList.remove('drag-over');
+  addFiles(Array.from(e.dataTransfer.files));
+});
 
-function onFile(e){const f=e.target.files[0];if(f)loadFile(f)}
+function onFile(e) { addFiles(Array.from(e.target.files)); }
 
-function loadFile(f){
-  currentFile=f;
-  dz.classList.add('has-file');
-  document.getElementById('file-label').textContent='✅ '+f.name;
-  const reader=new FileReader();
-  reader.onload=ev=>{const img=document.getElementById('preview');img.src=ev.target.result;img.style.display='block'};
-  reader.readAsDataURL(f);
-  document.getElementById('convert-btn').disabled=false;
-  document.getElementById('analyze-btn').disabled=false;
-  // 提案ボックスをリセット
-  document.getElementById('suggest-box').style.display='none';
+function addFiles(files) {
+  const imageFiles = files.filter(f => f.type.startsWith('image/'));
+  if (imageFiles.length === 0) return;
+  currentFiles = currentFiles.concat(imageFiles);
+  // ファイル名でソート（ページ順を維持）
+  currentFiles.sort((a, b) => a.name.localeCompare(b.name, undefined, {numeric: true}));
+  renderPageList();
+  document.getElementById('convert-btn').disabled = false;
+  document.getElementById('analyze-btn').disabled = false;
+  document.getElementById('suggest-box').style.display = 'none';
 }
 
-async function selectPreset(name, btn){
-  preset=name;
-  document.querySelectorAll('.preset-btn').forEach(b=>b.classList.remove('active'));
+function removeFile(idx) {
+  currentFiles.splice(idx, 1);
+  renderPageList();
+  if (currentFiles.length === 0) {
+    document.getElementById('convert-btn').disabled = true;
+    document.getElementById('analyze-btn').disabled = true;
+  }
+}
+
+function renderPageList() {
+  const list = document.getElementById('page-list');
+  const count = document.getElementById('page-count');
+  if (currentFiles.length === 0) {
+    list.style.display = 'none';
+    count.textContent = '';
+    dz.classList.remove('has-file');
+    document.getElementById('file-label').textContent = 'タップして楽譜を選択';
+    return;
+  }
+  list.style.display = 'block';
+  dz.classList.add('has-file');
+  document.getElementById('file-label').textContent = `✅ ${currentFiles.length}ページ選択済み`;
+  list.innerHTML = currentFiles.map((f, i) =>
+    `<div class="page-item">
+      <span class="pg-num">p${i+1}</span>
+      <span class="pg-name">${f.name}</span>
+      <span class="pg-del" onclick="removeFile(${i})">✕</span>
+    </div>`
+  ).join('');
+  count.textContent = `合計 ${currentFiles.length} ページ`;
+}
+
+async function selectPreset(name, btn) {
+  preset = name;
+  document.querySelectorAll('.preset-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
   await updateTuningDisplay(name);
 }
 
-async function updateTuningDisplay(name){
+async function updateTuningDisplay(name) {
   let data = tuningCache[name];
-  if(!data){
+  if (!data) {
     const res = await fetch(`/tuning_info?name=${encodeURIComponent(name)}`);
     data = await res.json();
     tuningCache[name] = data;
   }
   const row = document.getElementById('tuning-row');
-  row.innerHTML = data.tuning_display.map(t=>
+  row.innerHTML = data.tuning_display.map(t =>
     `<span class="tuning-item"><span class="ks">${t.string}</span>=<span class="kn">${t.note}</span></span>`
   ).join('');
 }
-
-// 初期表示
 updateTuningDisplay('G調');
 
-document.getElementById('font-size').addEventListener('input',function(){
-  document.getElementById('fs-val').textContent=this.value+'px';
+document.getElementById('font-size').addEventListener('input', function () {
+  document.getElementById('fs-val').textContent = this.value + 'px';
 });
 
-function changeTranspose(delta){
-  transposeVal=Math.max(-12,Math.min(12,transposeVal+delta));
+function changeTranspose(delta) {
+  transposeVal = Math.max(-12, Math.min(12, transposeVal + delta));
   updateTransposeDisplay();
 }
-function resetTranspose(){transposeVal=0;updateTransposeDisplay();}
-function updateTransposeDisplay(){
-  const el=document.getElementById('tr-display');
-  el.textContent = transposeVal===0 ? '0' : (transposeVal>0?'+':'')+transposeVal+' 半音';
+function resetTranspose() { transposeVal = 0; updateTransposeDisplay(); }
+function updateTransposeDisplay() {
+  const el = document.getElementById('tr-display');
+  el.textContent = transposeVal === 0 ? '0' : (transposeVal > 0 ? '+' : '') + transposeVal + ' 半音';
 }
 
-async function analyzeScore(){
-  if(!currentFile) return;
-  const btn=document.getElementById('analyze-btn');
-  btn.disabled=true;
-  btn.textContent='🔍 分析中...';
-  try{
-    const fd=new FormData();
-    fd.append('image',currentFile);
-    const res=await fetch('/analyze',{method:'POST',body:fd});
-    const data=await res.json();
-    if(data.error){
-      alert('分析エラー: '+data.error);
-      return;
-    }
-    // 提案を表示
-    const box=document.getElementById('suggest-box');
-    box.style.display='block';
-    document.getElementById('suggest-name').textContent=`推奨調弦: ${data.suggested}`;
-    // 弦と音の一覧
-    const grid=document.getElementById('suggest-tuning-grid');
-    grid.innerHTML=data.tuning_display.map(t=>
+async function analyzeScore() {
+  if (currentFiles.length === 0) return;
+  const btn = document.getElementById('analyze-btn');
+  btn.disabled = true;
+  btn.textContent = `🔍 ${currentFiles.length}ページを分析中...`;
+  try {
+    const fd = new FormData();
+    for (const f of currentFiles) fd.append('images', f);
+    const res = await fetch('/analyze_multi', { method: 'POST', body: fd });
+    const data = await res.json();
+    if (data.error) { alert('分析エラー: ' + data.error); return; }
+
+    const box = document.getElementById('suggest-box');
+    box.style.display = 'block';
+    document.getElementById('suggest-name').textContent = `推奨調弦: ${data.suggested}`;
+    document.getElementById('suggest-pages').textContent = `（${data.page_count}ページ分析済み）`;
+
+    const grid = document.getElementById('suggest-tuning-grid');
+    grid.innerHTML = data.tuning_display.map(t =>
       `<div class="tuning-cell"><span class="tuning-string">${t.string}</span><span class="tuning-note">${t.note}</span></div>`
     ).join('');
-    // 未対応音の警告
-    const warn=document.getElementById('unmatched-warn');
-    if(data.unmatched_notes && data.unmatched_notes.length>0){
-      warn.style.display='block';
-      warn.textContent=`⚠ この調弦で対応できない音: ${data.unmatched_notes.join(', ')}`;
+
+    const warn = document.getElementById('unmatched-warn');
+    if (data.unmatched_notes && data.unmatched_notes.length > 0) {
+      warn.style.display = 'block';
+      warn.textContent = `⚠ 対応できない音: ${data.unmatched_notes.join(', ')}`;
     } else {
-      warn.style.display='none';
+      warn.style.display = 'none';
     }
-    // 調弦ボタンを自動選択
-    document.querySelectorAll('.preset-btn').forEach(b=>{
-      if(b.textContent===data.suggested){
-        b.click();
-      }
+
+    document.querySelectorAll('.preset-btn').forEach(b => {
+      if (b.textContent === data.suggested) b.click();
     });
-  }catch(e){
-    alert('通信エラー: '+e.message);
-  }finally{
-    btn.disabled=false;
-    btn.textContent='🔍 楽譜を分析して調弦を自動提案';
+  } catch (e) {
+    alert('通信エラー: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🔍 全ページを分析して調弦を自動提案';
   }
 }
 
-async function convert(){
-  if(!currentFile) return;
-  document.getElementById('loading').style.display='block';
-  document.getElementById('result-area').innerHTML='';
-  document.getElementById('convert-btn').disabled=true;
-  try{
-    const fd=new FormData();
-    fd.append('image',currentFile);
-    fd.append('tuning',preset);
-    fd.append('font_size',document.getElementById('font-size').value);
-    fd.append('transpose',transposeVal);
-    const res=await fetch('/process',{method:'POST',body:fd});
-    const data=await res.json();
-    document.getElementById('loading').style.display='none';
-    const trLabel=transposeVal!==0?`・移調${transposeVal>0?'+':''}${transposeVal}半音`:'';
-    if(data.error){
-      document.getElementById('result-area').innerHTML=`<div class="msg-err">❌ ${data.error}</div>`;
-    } else {
-      resultData=data.image;
-      // 調弦表を結果に含める
+async function convert() {
+  if (currentFiles.length === 0) return;
+  document.getElementById('loading').style.display = 'block';
+  document.getElementById('result-area').innerHTML = '';
+  document.getElementById('convert-btn').disabled = true;
+  const isMulti = currentFiles.length > 1;
+  document.getElementById('loading-msg').textContent = isMulti
+    ? `${currentFiles.length}ページの音符を検出して箏符を付与中...`
+    : '音符を自動検出して箏符を付与中...（10〜30秒）';
+
+  try {
+    const fd = new FormData();
+    for (const f of currentFiles) fd.append('images', f);
+    fd.append('tuning', preset);
+    fd.append('font_size', document.getElementById('font-size').value);
+    fd.append('transpose', transposeVal);
+
+    const endpoint = isMulti ? '/process_multi' : '/process_multi';
+    const res = await fetch(endpoint, { method: 'POST', body: fd });
+    const data = await res.json();
+    document.getElementById('loading').style.display = 'none';
+
+    const trLabel = transposeVal !== 0 ? `・移調${transposeVal > 0 ? '+' : ''}${transposeVal}半音` : '';
+
+    if (data.error) {
+      document.getElementById('result-area').innerHTML = `<div class="msg-err">❌ ${data.error}</div>`;
+    } else if (data.mode === 'single') {
       const tdHtml = data.tuning_display
-        ? data.tuning_display.map(t=>`<span class="tuning-item"><span class="ks">${t.string}</span>=<span class="kn">${t.note}</span></span>`).join('')
+        ? data.tuning_display.map(t => `<span class="tuning-item"><span class="ks">${t.string}</span>=<span class="kn">${t.note}</span></span>`).join('')
         : '';
-      document.getElementById('result-area').innerHTML=`
+      document.getElementById('result-area').innerHTML = `
         <div class="msg-ok">✅ ${data.message}</div>
         <div class="card result-card">
           <div class="card-title">箏符プレビュー（${preset}${trLabel}）</div>
@@ -303,22 +344,43 @@ async function convert(){
             <img src="${data.image}" class="result-img">
           </div>
         </div>
-        <button class="btn" onclick="download()">⬇ 画像をダウンロード</button>
+        <button class="btn" onclick="downloadSingle('${data.image}')">⬇ 画像をダウンロード</button>
         <button class="btn btn-sub" onclick="window.print()" style="margin-top:6px">🖨 印刷</button>
       `;
+    } else {
+      // 複数ページ：ZIPダウンロード
+      document.getElementById('result-area').innerHTML = `
+        <div class="msg-ok">✅ ${data.message}</div>
+        <div class="card">
+          <div class="card-title">処理完了（${preset}${trLabel}）</div>
+          <div class="card-body">
+            <p style="font-size:13px;color:var(--ash);margin-bottom:12px">
+              ${data.page_count}ページ分の箏符楽譜をZIPファイルにまとめました。<br>
+              ダウンロードして各ページをご確認ください。
+            </p>
+            <button class="btn" onclick="downloadZip('${data.zip}')">⬇ 全ページをZIPでダウンロード</button>
+          </div>
+        </div>
+      `;
     }
-  }catch(e){
-    document.getElementById('loading').style.display='none';
-    document.getElementById('result-area').innerHTML=`<div class="msg-err">❌ 通信エラー: ${e.message}</div>`;
+  } catch (e) {
+    document.getElementById('loading').style.display = 'none';
+    document.getElementById('result-area').innerHTML = `<div class="msg-err">❌ 通信エラー: ${e.message}</div>`;
   }
-  document.getElementById('convert-btn').disabled=false;
+  document.getElementById('convert-btn').disabled = false;
 }
 
-function download(){
-  if(!resultData) return;
-  const a=document.createElement('a');
-  a.href=resultData;
-  a.download='箏符楽譜.jpg';
+function downloadSingle(dataUrl) {
+  const a = document.createElement('a');
+  a.href = dataUrl;
+  a.download = '箏符楽譜.jpg';
+  a.click();
+}
+
+function downloadZip(dataUrl) {
+  const a = document.createElement('a');
+  a.href = dataUrl;
+  a.download = '箏符楽譜_全ページ.zip';
   a.click();
 }
 </script>

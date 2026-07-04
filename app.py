@@ -5,9 +5,10 @@ from PIL import Image, ImageDraw, ImageFont
 import io
 import base64
 import os
+import zipfile
 
 app = Flask(__name__)
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
+app.config['MAX_CONTENT_LENGTH'] = 64 * 1024 * 1024  # 64MB（複数ページ対応）
 
 # 弦名（山田流・正式字体）
 STRING_KANJI = ['壱','弍','参','四','五','六','七','八','九','十','斗','為','巾']
@@ -17,7 +18,7 @@ CHROMATIC = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B']
 ENHARMONIC = {'Bb':'A#','Eb':'D#','Ab':'G#','Db':'C#','Gb':'F#','B#':'C','E#':'F'}
 
 # ─────────────────────────────────────────────
-# 箏の調弦定義（正確な音列・オクターブ付き）
+# 箏の調弦定義
 # ─────────────────────────────────────────────
 TUNING_DEFS = {
     '平調子':    [('D',4),('G',3),('A',3),('A#',3),('D',4),('D#',4),('G',4),('A',4),('A#',4),('D',5),('D#',5),('G',5),('A',5)],
@@ -37,9 +38,6 @@ TUNING_DEFS = {
 
 PRESET_ORDER = ['G調','D調','A調','C調','F調','Bb調','平調子','雲井調子','本雲井調子','楽調子','乃木調子','中空調子','古今調子']
 
-# ─────────────────────────────────────────────
-# 五線譜上の音符位置→音名マッピング（ト音記号基準: 第2線=G4）
-# ─────────────────────────────────────────────
 PITCH_STEPS = {
     'B2':-7.5,'C3':-7,'D3':-6.5,'E3':-6,'F3':-5.5,'F#3':-5.5,
     'G3':-5,  'G#3':-5,'A3':-4.5,'A#3':-4.5,'B3':-4,
@@ -55,7 +53,6 @@ for pitch, step in PITCH_STEPS.items():
     if step not in STEP_TO_PITCH:
         STEP_TO_PITCH[step] = pitch
 
-# フォントパス（PythonAnywhere対応）
 FONT_PATHS = [
     '/usr/share/fonts/opentype/ipaexfont-mincho/ipaexm.ttf',
     '/usr/share/fonts/opentype/ipafont-mincho/ipamp.ttf',
@@ -123,13 +120,9 @@ def detect_staves(binary, W):
         if np.mean(gaps) > 3 and max(gaps)-min(gaps) < np.mean(gaps)*0.6:
             staves.append(five); i += 5
         else: i += 1
-    return staves[::2]  # ト音記号段のみ
+    return staves[::2]
 
 def find_clef_end(stave, binary, W):
-    """
-    ト音記号・調号・拍子記号エリアの右端を検出。
-    4/4などの拍子記号を除外するため最低20%を確保。
-    """
     y1, y2 = stave[0]-2, stave[4]+2
     cs = np.sum(binary[y1:y2, :], axis=0) / 255
     th = (y2-y1) * 0.65
@@ -143,7 +136,6 @@ def find_clef_end(stave, binary, W):
         else: gps.append(cu); cu = [x]
     gps.append(cu)
     clef_end = int(np.mean(gps[0])) + 16
-    # 最低20%を保証（拍子記号を確実に除外）
     return max(clef_end, int(W * 0.20))
 
 def y_to_pitch(cy, stave):
@@ -155,88 +147,52 @@ def y_to_pitch(cy, stave):
     return STEP_TO_PITCH[nearest]
 
 def is_notehead(cnt, gap):
-    """
-    符頭（音符の玉）かどうかを判定。
-    検出漏れを減らすため許容範囲を緩めに設定。
-    拍子記号の除外はfind_clef_endで行う。
-    """
     x, y, w, h = cv2.boundingRect(cnt)
     area = cv2.contourArea(cnt)
     aspect = w/h if h > 0 else 0
-    # サイズフィルタ（緩め）
     if not (gap*0.4 <= w <= gap*2.5): return False
     if not (gap*0.3 <= h <= gap*1.6): return False
-    # アスペクト比
     if not (0.5 <= aspect <= 2.8): return False
-    # 面積
     if area < gap*gap*0.15: return False
-    # 充填率（緩め）
     fill_ratio = area / (w * h) if w*h > 0 else 0
     if fill_ratio < 0.28: return False
-    # 凸性（緩め）
     hull = cv2.convexHull(cnt)
     hull_area = cv2.contourArea(hull)
     if hull_area > 0:
         if area / hull_area < 0.45: return False
     return True
 
-def add_tuning_table(img, tuning_name, font_size):
-    """出力画像の下部に調弦表を追加する"""
-    tuning = TUNING_DEFS.get(tuning_name, TUNING_DEFS['G調'])
-    W, H = img.size
-    table_font_size = max(11, min(font_size, 16))
-    tf = get_font(table_font_size)
-    tf_title = get_font(table_font_size + 1)
+def prepare_binary(img_bytes):
+    """画像バイトからbinary画像と五線を返す"""
+    nparr = np.frombuffer(img_bytes, np.uint8)
+    img_cv = cv2.imdecode(nparr, cv2.IMREAD_GRAYSCALE)
+    H, W = img_cv.shape
+    _, binary = cv2.threshold(img_cv, 200, 255, cv2.THRESH_BINARY_INV)
+    treble_staves = detect_staves(binary, W)
+    # 符頭抽出用クリーン画像
+    hk = cv2.getStructuringElement(cv2.MORPH_RECT, (50, 1))
+    hl = cv2.morphologyEx(binary, cv2.MORPH_OPEN, hk)
+    bn = cv2.subtract(binary, hl)
+    vk = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 20))
+    vl = cv2.morphologyEx(bn, cv2.MORPH_OPEN, vk)
+    bn = cv2.subtract(bn, vl)
+    bk = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 1))
+    bl = cv2.morphologyEx(bn, cv2.MORPH_OPEN, bk)
+    bn_clean = cv2.subtract(bn, bl)
+    contours, _ = cv2.findContours(bn_clean, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    return binary, treble_staves, contours, H, W
 
-    padding = 6
-    cell_w = max(34, W // 14)
-    cell_h = table_font_size * 2 + padding * 3
-    title_h = table_font_size + padding * 2
-    table_h = title_h + cell_h + padding
-
-    table_img = Image.new('RGB', (W, table_h), (248, 244, 236))
-    td = ImageDraw.Draw(table_img)
-
-    # 区切り線
-    td.line([(0, 0), (W, 0)], fill=(180, 150, 100), width=2)
-
-    # タイトル
-    title = f'調弦表 — {tuning_name}'
-    td.text((padding, padding), title, font=tf_title, fill=(100, 50, 0))
-
-    # 各弦
-    y0 = title_h
-    for i, (note, octave) in enumerate(tuning):
-        n = ENHARMONIC.get(note, note)
-        kanji = STRING_KANJI[i]
-        x = i * cell_w
-        bg = (255, 252, 242) if i % 2 == 0 else (242, 248, 255)
-        td.rectangle([x+1, y0+1, x+cell_w-1, y0+cell_h-1], fill=bg, outline=(190, 165, 120))
-        # 弦名（漢字・赤系）
-        bbox = td.textbbox((0,0), kanji, font=tf)
-        kw = bbox[2]-bbox[0]
-        td.text((x+(cell_w-kw)//2, y0+padding), kanji, font=tf, fill=(160, 30, 0))
-        # 音名（英語・青系）
-        bbox2 = td.textbbox((0,0), n, font=tf)
-        nw = bbox2[2]-bbox2[0]
-        td.text((x+(cell_w-nw)//2, y0+padding+table_font_size+2), n, font=tf, fill=(20, 60, 140))
-
-    combined = Image.new('RGB', (W, H + table_h), (255, 255, 255))
-    combined.paste(img, (0, 0))
-    combined.paste(table_img, (0, H))
-    return combined
-
-# ─────────────────────────────────────────────
-# 楽譜分析
-# ─────────────────────────────────────────────
-def extract_used_pitches(contours, treble_staves, binary, W):
+def extract_used_pitches_from_page(img_bytes):
+    """1ページ分の画像から使用音MIDIセットを抽出"""
+    binary, treble_staves, contours, H, W = prepare_binary(img_bytes)
+    if not treble_staves:
+        return set()
     used_midi = set()
     for si, stave in enumerate(treble_staves):
         clef_end = find_clef_end(stave, binary, W)
         gap = np.mean([stave[j+1]-stave[j] for j in range(4)])
-        H_total = binary.shape[0]
         y_top = 0 if si == 0 else (treble_staves[si-1][4]+stave[0])//2
-        y_bot = H_total if si == len(treble_staves)-1 else (stave[4]+treble_staves[si+1][0])//2
+        y_bot = H if si == len(treble_staves)-1 else (stave[4]+treble_staves[si+1][0])//2
         for cnt in contours:
             x, y, w, h = cv2.boundingRect(cnt)
             cx, cy = x+w//2, y+h//2
@@ -249,6 +205,7 @@ def extract_used_pitches(contours, treble_staves, binary, W):
     return used_midi
 
 def suggest_tuning(used_midi):
+    """全ページの使用音から最適調弦を提案"""
     if not used_midi:
         return 'G調', []
     best_name = None
@@ -271,37 +228,46 @@ def suggest_tuning(used_midi):
             best_unmatched = sorted(unmatched)
     return best_name, best_unmatched
 
-# ─────────────────────────────────────────────
-# メイン処理
-# ─────────────────────────────────────────────
-def process_image(img_bytes, tuning_name, transpose=0, font_size=20, auto_suggest=False):
-    nparr = np.frombuffer(img_bytes, np.uint8)
-    img_cv = cv2.imdecode(nparr, cv2.IMREAD_GRAYSCALE)
-    H, W = img_cv.shape
+def add_tuning_table(img, tuning_name, font_size):
+    """出力画像の下部に調弦表を追加"""
+    tuning = TUNING_DEFS.get(tuning_name, TUNING_DEFS['G調'])
+    W, H = img.size
+    table_font_size = max(11, min(font_size, 16))
+    tf = get_font(table_font_size)
+    tf_title = get_font(table_font_size + 1)
+    padding = 6
+    cell_w = max(34, W // 14)
+    cell_h = table_font_size * 2 + padding * 3
+    title_h = table_font_size + padding * 2
+    table_h = title_h + cell_h + padding
+    table_img = Image.new('RGB', (W, table_h), (248, 244, 236))
+    td = ImageDraw.Draw(table_img)
+    td.line([(0, 0), (W, 0)], fill=(180, 150, 100), width=2)
+    title = f'調弦表 — {tuning_name}'
+    td.text((padding, padding), title, font=tf_title, fill=(100, 50, 0))
+    y0 = title_h
+    for i, (note, octave) in enumerate(tuning):
+        n = ENHARMONIC.get(note, note)
+        kanji = STRING_KANJI[i]
+        x = i * cell_w
+        bg = (255, 252, 242) if i % 2 == 0 else (242, 248, 255)
+        td.rectangle([x+1, y0+1, x+cell_w-1, y0+cell_h-1], fill=bg, outline=(190, 165, 120))
+        bbox = td.textbbox((0,0), kanji, font=tf)
+        kw = bbox[2]-bbox[0]
+        td.text((x+(cell_w-kw)//2, y0+padding), kanji, font=tf, fill=(160, 30, 0))
+        bbox2 = td.textbbox((0,0), n, font=tf)
+        nw = bbox2[2]-bbox2[0]
+        td.text((x+(cell_w-nw)//2, y0+padding+table_font_size+2), n, font=tf, fill=(20, 60, 140))
+    combined = Image.new('RGB', (W, H + table_h), (255, 255, 255))
+    combined.paste(img, (0, 0))
+    combined.paste(table_img, (0, H))
+    return combined
 
-    _, binary = cv2.threshold(img_cv, 200, 255, cv2.THRESH_BINARY_INV)
-    treble_staves = detect_staves(binary, W)
+def process_single_page(img_bytes, tuning_name, transpose, font_size, add_table=True):
+    """1ページを処理して箏符付き画像を返す"""
+    binary, treble_staves, contours, H, W = prepare_binary(img_bytes)
     if not treble_staves:
-        return None, "五線譜が検出できませんでした", None, []
-
-    # 五線・符幹・梁を除去
-    hk = cv2.getStructuringElement(cv2.MORPH_RECT, (50, 1))
-    hl = cv2.morphologyEx(binary, cv2.MORPH_OPEN, hk)
-    bn = cv2.subtract(binary, hl)
-    vk = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 20))
-    vl = cv2.morphologyEx(bn, cv2.MORPH_OPEN, vk)
-    bn = cv2.subtract(bn, vl)
-    bk = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 1))
-    bl = cv2.morphologyEx(bn, cv2.MORPH_OPEN, bk)
-    bn_clean = cv2.subtract(bn, bl)
-
-    contours, _ = cv2.findContours(bn_clean, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    suggested_tuning = None
-    if auto_suggest:
-        used_midi = extract_used_pitches(contours, treble_staves, binary, W)
-        suggested_tuning, _ = suggest_tuning(used_midi)
-        tuning_name = suggested_tuning
+        return None, 0
 
     midi_map = build_midi_map(tuning_name, transpose)
     font = get_font(font_size)
@@ -312,7 +278,6 @@ def process_image(img_bytes, tuning_name, transpose=0, font_size=20, auto_sugges
         gap = np.mean([stave[j+1]-stave[j] for j in range(4)])
         y_top = 0 if si == 0 else (treble_staves[si-1][4]+stave[0])//2
         y_bot = H if si == len(treble_staves)-1 else (stave[4]+treble_staves[si+1][0])//2
-
         for cnt in contours:
             x, y, w, h = cv2.boundingRect(cnt)
             cx, cy = x+w//2, y+h//2
@@ -331,7 +296,6 @@ def process_image(img_bytes, tuning_name, transpose=0, font_size=20, auto_sugges
     overlay = Image.new('RGBA', img_pil.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
 
-    drawn = 0
     for n in notes:
         full = n['kanji'] + n['suffix']
         col = (180, 0, 0, 255) if not n['suffix'] else (26, 106, 170, 255) if n['suffix'] == '△' else (122, 26, 170, 255)
@@ -343,17 +307,12 @@ def process_image(img_bytes, tuning_name, transpose=0, font_size=20, auto_sugges
         ty = top_y - th
         draw.rectangle([tx-2, ty-2, tx+tw+2, ty+th+2], fill=(255, 255, 255, 210))
         draw.text((tx, ty), full, font=font, fill=col)
-        drawn += 1
 
     result_img = Image.alpha_composite(img_pil, overlay).convert('RGB')
+    if add_table:
+        result_img = add_tuning_table(result_img, tuning_name, font_size)
 
-    # 調弦表を画像下部に追加
-    result = add_tuning_table(result_img, tuning_name, font_size)
-
-    tr_str = f'（移調{transpose:+d}半音）' if transpose != 0 else ''
-    msg = f"{drawn}個の音符を検出して箏符を付与しました{tr_str}"
-
-    return result, msg, suggested_tuning, get_tuning_display(tuning_name)
+    return result_img, len(notes)
 
 # ─────────────────────────────────────────────
 # Flask ルート
@@ -362,31 +321,114 @@ def process_image(img_bytes, tuning_name, transpose=0, font_size=20, auto_sugges
 def index():
     return render_template('index.html', presets=PRESET_ORDER)
 
+@app.route('/analyze_multi', methods=['POST'])
+def analyze_multi():
+    """複数ページの楽譜を分析して最適調弦を提案する"""
+    try:
+        files = request.files.getlist('images')
+        if not files or len(files) == 0:
+            return jsonify({'error': '画像が必要です'}), 400
+
+        # 全ページの使用音を統合
+        all_used_midi = set()
+        page_count = 0
+        for f in files:
+            img_bytes = f.read()
+            if not img_bytes:
+                continue
+            used = extract_used_pitches_from_page(img_bytes)
+            all_used_midi |= used
+            page_count += 1
+
+        if not all_used_midi:
+            return jsonify({'error': '五線譜が検出できませんでした'}), 400
+
+        suggested, unmatched = suggest_tuning(all_used_midi)
+        tuning_display = get_tuning_display(suggested)
+        used_names = sorted(set(midi_to_name(m) for m in all_used_midi))
+        unmatched_names = sorted(set(midi_to_name(m) for m in unmatched))
+
+        return jsonify({
+            'suggested': suggested,
+            'tuning_display': tuning_display,
+            'used_notes': used_names,
+            'unmatched_notes': unmatched_names,
+            'page_count': page_count,
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/process_multi', methods=['POST'])
+def process_multi():
+    """複数ページの楽譜に箏符を付与してZIPで返す"""
+    try:
+        files = request.files.getlist('images')
+        tuning = request.form.get('tuning', 'G調')
+        font_size = int(request.form.get('font_size', 20))
+        transpose = int(request.form.get('transpose', 0))
+
+        if not files or len(files) == 0:
+            return jsonify({'error': '画像が必要です'}), 400
+
+        results = []
+        total_notes = 0
+        for i, f in enumerate(files):
+            img_bytes = f.read()
+            if not img_bytes:
+                continue
+            # 最後のページにのみ調弦表を追加
+            add_table = (i == len(files) - 1)
+            result_img, note_count = process_single_page(img_bytes, tuning, transpose, font_size, add_table)
+            if result_img is None:
+                results.append(None)
+                continue
+            buf = io.BytesIO()
+            result_img.save(buf, format='JPEG', quality=92)
+            buf.seek(0)
+            results.append(buf.read())
+            total_notes += note_count
+
+        # 1ページの場合はそのまま返す
+        if len(results) == 1 and results[0] is not None:
+            b64 = base64.b64encode(results[0]).decode()
+            tr_str = f'（移調{transpose:+d}半音）' if transpose != 0 else ''
+            return jsonify({
+                'success': True,
+                'mode': 'single',
+                'image': f'data:image/jpeg;base64,{b64}',
+                'message': f'{total_notes}個の音符を検出して箏符を付与しました{tr_str}',
+                'tuning_display': get_tuning_display(tuning),
+            })
+
+        # 複数ページはZIPで返す
+        zip_buf = io.BytesIO()
+        with zipfile.ZipFile(zip_buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for i, img_data in enumerate(results):
+                if img_data is not None:
+                    zf.writestr(f'箏符楽譜_p{i+1:02d}.jpg', img_data)
+        zip_buf.seek(0)
+        zip_b64 = base64.b64encode(zip_buf.read()).decode()
+        tr_str = f'（移調{transpose:+d}半音）' if transpose != 0 else ''
+        return jsonify({
+            'success': True,
+            'mode': 'multi',
+            'zip': f'data:application/zip;base64,{zip_b64}',
+            'page_count': len([r for r in results if r is not None]),
+            'message': f'{len(files)}ページ・{total_notes}個の音符を検出して箏符を付与しました{tr_str}',
+            'tuning_display': get_tuning_display(tuning),
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/analyze', methods=['POST'])
 def analyze():
+    """単一ページ分析（後方互換）"""
     try:
         file = request.files.get('image')
         if not file:
             return jsonify({'error': '画像が必要です'}), 400
         img_bytes = file.read()
-        nparr = np.frombuffer(img_bytes, np.uint8)
-        img_cv = cv2.imdecode(nparr, cv2.IMREAD_GRAYSCALE)
-        H, W = img_cv.shape
-        _, binary = cv2.threshold(img_cv, 200, 255, cv2.THRESH_BINARY_INV)
-        treble_staves = detect_staves(binary, W)
-        if not treble_staves:
-            return jsonify({'error': '五線譜が検出できませんでした'}), 400
-        hk = cv2.getStructuringElement(cv2.MORPH_RECT, (50, 1))
-        hl = cv2.morphologyEx(binary, cv2.MORPH_OPEN, hk)
-        bn = cv2.subtract(binary, hl)
-        vk = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 20))
-        vl = cv2.morphologyEx(bn, cv2.MORPH_OPEN, vk)
-        bn = cv2.subtract(bn, vl)
-        bk = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 1))
-        bl = cv2.morphologyEx(bn, cv2.MORPH_OPEN, bk)
-        bn_clean = cv2.subtract(bn, bl)
-        contours, _ = cv2.findContours(bn_clean, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        used_midi = extract_used_pitches(contours, treble_staves, binary, W)
+        used_midi = extract_used_pitches_from_page(img_bytes)
         suggested, unmatched = suggest_tuning(used_midi)
         tuning_display = get_tuning_display(suggested)
         used_names = sorted(set(midi_to_name(m) for m in used_midi))
@@ -396,36 +438,36 @@ def analyze():
             'tuning_display': tuning_display,
             'used_notes': used_names,
             'unmatched_notes': unmatched_names,
+            'page_count': 1,
         })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 @app.route('/process', methods=['POST'])
 def process():
+    """単一ページ処理（後方互換）"""
     try:
         file = request.files.get('image')
         tuning = request.form.get('tuning', 'G調')
         font_size = int(request.form.get('font_size', 20))
         transpose = int(request.form.get('transpose', 0))
-        auto_suggest = request.form.get('auto_suggest', 'false') == 'true'
         if not file:
             return jsonify({'error': '画像が必要です'}), 400
         img_bytes = file.read()
-        result, msg, suggested, tuning_display = process_image(
-            img_bytes, tuning, transpose, font_size, auto_suggest
-        )
-        if result is None:
-            return jsonify({'error': msg}), 400
+        result_img, note_count = process_single_page(img_bytes, tuning, transpose, font_size, add_table=True)
+        if result_img is None:
+            return jsonify({'error': '五線譜が検出できませんでした'}), 400
         buf = io.BytesIO()
-        result.save(buf, format='JPEG', quality=92)
+        result_img.save(buf, format='JPEG', quality=92)
         buf.seek(0)
         b64 = base64.b64encode(buf.read()).decode()
+        tr_str = f'（移調{transpose:+d}半音）' if transpose != 0 else ''
         return jsonify({
             'success': True,
+            'mode': 'single',
             'image': f'data:image/jpeg;base64,{b64}',
-            'message': msg,
-            'suggested_tuning': suggested,
-            'tuning_display': tuning_display,
+            'message': f'{note_count}個の音符を検出して箏符を付与しました{tr_str}',
+            'tuning_display': get_tuning_display(tuning),
         })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -433,10 +475,7 @@ def process():
 @app.route('/tuning_info', methods=['GET'])
 def tuning_info():
     name = request.args.get('name', 'G調')
-    return jsonify({
-        'name': name,
-        'tuning_display': get_tuning_display(name),
-    })
+    return jsonify({'name': name, 'tuning_display': get_tuning_display(name)})
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)
