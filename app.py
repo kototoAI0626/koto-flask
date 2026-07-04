@@ -275,8 +275,70 @@ def add_tuning_table(img, tuning_name, font_size):
     combined.paste(table_img, (0, H))
     return combined
 
-def process_single_page(img_bytes, tuning_name, transpose, font_size, add_table=True):
-    """1ページを処理して箏符付き画像を返す"""
+def add_tuning_table_top(img, tuning_name, font_size):
+    """
+    画像の上部（先頭）に調弦表を追加する（p1用）。
+    調弦表は各弦名と音名をセル形式で表示。
+    """
+    tuning = TUNING_DEFS.get(tuning_name, TUNING_DEFS['G調'])
+    W, H = img.size
+    table_font_size = max(11, min(font_size, 16))
+    tf = get_font(table_font_size)
+    tf_title = get_font(table_font_size + 1)
+    padding = 6
+    cell_w = max(34, W // 14)
+    cell_h = table_font_size * 2 + padding * 3
+    title_h = table_font_size + padding * 2
+    table_h = title_h + cell_h + padding
+    table_img = Image.new('RGB', (W, table_h), (248, 244, 236))
+    td = ImageDraw.Draw(table_img)
+    td.line([(0, table_h-2), (W, table_h-2)], fill=(180, 150, 100), width=2)
+    title = f'調弦表 — {tuning_name}'
+    td.text((padding, padding), title, font=tf_title, fill=(100, 50, 0))
+    y0 = title_h
+    for i, (note, octave) in enumerate(tuning):
+        n = ENHARMONIC.get(note, note)
+        kanji = STRING_KANJI[i]
+        x = i * cell_w
+        bg = (255, 252, 242) if i % 2 == 0 else (242, 248, 255)
+        td.rectangle([x+1, y0+1, x+cell_w-1, y0+cell_h-1], fill=bg, outline=(190, 165, 120))
+        bbox = td.textbbox((0,0), kanji, font=tf)
+        kw = bbox[2]-bbox[0]
+        td.text((x+(cell_w-kw)//2, y0+padding), kanji, font=tf, fill=(160, 30, 0))
+        bbox2 = td.textbbox((0,0), n, font=tf)
+        nw = bbox2[2]-bbox2[0]
+        td.text((x+(cell_w-nw)//2, y0+padding+table_font_size+2), n, font=tf, fill=(20, 60, 140))
+    # 元画像の上に調弦表を配置
+    combined = Image.new('RGB', (W, H + table_h), (255, 255, 255))
+    combined.paste(table_img, (0, 0))
+    combined.paste(img, (0, table_h))
+    return combined
+
+def group_chords(notes, gap_threshold=None):
+    """
+    同じX座標附近に複数の音符がある場合、和音としてグループ化する。
+    返り値: [グループのリスト] 各グループは音符のリスト（Y座標降順でソート）
+    """
+    if not notes:
+        return []
+    threshold = gap_threshold or 20  # X座標の許容差（px）
+    groups = []
+    current_group = [notes[0]]
+    for n in notes[1:]:
+        if abs(n['x'] - current_group[0]['x']) <= threshold and n['stave'] == current_group[0]['stave']:
+            current_group.append(n)
+        else:
+            groups.append(sorted(current_group, key=lambda x: -x['y']))  # 上の音から順に
+            current_group = [n]
+    groups.append(sorted(current_group, key=lambda x: -x['y']))
+    return groups
+
+def process_single_page(img_bytes, tuning_name, transpose, font_size, add_table=False, add_table_top=False):
+    """
+    1ページを処理して箏符付き画像を返す。
+    add_table: 画像下部に調弦表を追加（広いバー形式）
+    add_table_top: 画像上部（先頭）に調弦表を追加（p1用）
+    """
     binary, treble_staves, contours, H, W = prepare_binary(img_bytes)
     if not treble_staves:
         return None, 0
@@ -304,25 +366,57 @@ def process_single_page(img_bytes, tuning_name, transpose, font_size, add_table=
 
     notes.sort(key=lambda n: (n['stave'], n['x']))
 
+    # 和音グループ化（同X座標付近の音符をまとめる）
+    chord_groups = group_chords(notes)
+
     img_pil = Image.open(io.BytesIO(img_bytes)).convert('RGBA')
     overlay = Image.new('RGBA', img_pil.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
 
-    for n in notes:
-        full = n['kanji'] + n['suffix']
-        col = (180, 0, 0, 255) if not n['suffix'] else (26, 106, 170, 255) if n['suffix'] == '△' else (122, 26, 170, 255)
-        stave = treble_staves[n['stave']]
+    for group in chord_groups:
+        stave = treble_staves[group[0]['stave']]
         top_y = stave[0] - 8
-        bbox = draw.textbbox((0, 0), full, font=font)
-        tw, th = bbox[2]-bbox[0], bbox[3]-bbox[1]
-        tx = n['x'] - tw//2
-        ty = top_y - th
-        draw.rectangle([tx-2, ty-2, tx+tw+2, ty+th+2], fill=(255, 255, 255, 210))
-        draw.text((tx, ty), full, font=font, fill=col)
+        cx = group[0]['x']  # 代表X座標
+
+        if len(group) == 1:
+            # 単音：従来通り
+            n = group[0]
+            full = n['kanji'] + n['suffix']
+            col = (180, 0, 0, 255) if not n['suffix'] else (26, 106, 170, 255) if n['suffix'] == '△' else (122, 26, 170, 255)
+            bbox = draw.textbbox((0, 0), full, font=font)
+            tw, th = bbox[2]-bbox[0], bbox[3]-bbox[1]
+            tx = cx - tw//2
+            ty = top_y - th
+            draw.rectangle([tx-2, ty-2, tx+tw+2, ty+th+2], fill=(255, 255, 255, 210))
+            draw.text((tx, ty), full, font=font, fill=col)
+        else:
+            # 和音：縦に並べて表示（上の音から順に）
+            # まず全テキストの最大幅を計算
+            texts = []
+            for n in group:
+                full = n['kanji'] + n['suffix']
+                col = (180, 0, 0, 255) if not n['suffix'] else (26, 106, 170, 255) if n['suffix'] == '△' else (122, 26, 170, 255)
+                bbox = draw.textbbox((0, 0), full, font=font)
+                tw, th = bbox[2]-bbox[0], bbox[3]-bbox[1]
+                texts.append({'full': full, 'col': col, 'tw': tw, 'th': th})
+            max_tw = max(t['tw'] for t in texts)
+            total_th = sum(t['th'] for t in texts) + 2 * (len(texts) - 1)
+            # 背景ボックス
+            tx = cx - max_tw//2
+            ty = top_y - total_th
+            draw.rectangle([tx-2, ty-2, tx+max_tw+2, top_y+2], fill=(255, 255, 255, 210))
+            # 各文字を縦に描画
+            cur_y = ty
+            for t in texts:
+                tx_center = cx - t['tw']//2
+                draw.text((tx_center, cur_y), t['full'], font=font, fill=t['col'])
+                cur_y += t['th'] + 2
 
     result_img = Image.alpha_composite(img_pil, overlay).convert('RGB')
-    if add_table:
-        result_img = add_tuning_table(result_img, tuning_name, font_size)
+
+    # 調弦表を先頭（上部）に追加（p1用）
+    if add_table_top:
+        result_img = add_tuning_table_top(result_img, tuning_name, font_size)
 
     return result_img, len(notes)
 
@@ -388,9 +482,9 @@ def process_multi():
             img_bytes = f.read()
             if not img_bytes:
                 continue
-            # 最後のページにのみ調弦表を追加
-            add_table = (i == len(files) - 1)
-            result_img, note_count = process_single_page(img_bytes, tuning, transpose, font_size, add_table)
+            # p1の先頭に調弦表を追加
+            add_table_top = (i == 0)
+            result_img, note_count = process_single_page(img_bytes, tuning, transpose, font_size, add_table=False, add_table_top=add_table_top)
             if result_img is None:
                 results.append(None)
                 continue
