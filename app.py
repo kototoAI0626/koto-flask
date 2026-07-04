@@ -122,75 +122,150 @@ def detect_staves(binary, W):
         else: i += 1
     return staves[::2]
 
-def find_clef_end(stave, binary, W):
+def find_clef_end(stave, binary, W, min_ratio=0.12):
+    """
+    ト音記号・調号・拍子記号エリアの右端を検出。
+    min_ratio: 最低保証割合（デフォルト 12%）
+    拍子記号がある場合（p1）は20%、ない場合（p2以降）は12%。
+    """
     y1, y2 = stave[0]-2, stave[4]+2
     cs = np.sum(binary[y1:y2, :], axis=0) / 255
     th = (y2-y1) * 0.65
     vc = np.where(cs > th)[0]
-    valid = vc[vc > int(W*0.06)]
+    valid = vc[vc > int(W*0.05)]
     if len(valid) == 0:
-        return int(W * 0.22)
+        return int(W * min_ratio)
     gps, cu = [], [valid[0]]
     for x in valid[1:]:
-        if x - cu[-1] <= 8: cu.append(x)
+        if x - cu[-1] <= 10: cu.append(x)
         else: gps.append(cu); cu = [x]
     gps.append(cu)
-    clef_end = int(np.mean(gps[0])) + 16
-    return max(clef_end, int(W * 0.20))
+    clef_end = int(np.mean(gps[0])) + 14
+    return max(clef_end, int(W * min_ratio))
 
 def y_to_pitch(cy, stave):
-    gap = np.mean([stave[j+1]-stave[j] for j in range(4)])
+    """
+    Y座標から音名を判定する。
+    改善点: 五線間隔の平均を正確に計算し、
+    ト音記号の第2線（G4）を基準に音高を判定。
+    step値は五線間隔単位で、正が上方向。
+    """
+    gaps = [stave[j+1]-stave[j] for j in range(4)]
+    gap = np.mean(gaps)
+    # ト音記号基準: 第2線=G4
     g4_y = stave[1]
-    step = (g4_y - cy) / gap
+    # step値: G4が-1.5なので、第2線からの相対位置を計算
+    # step = (g4_y - cy) / gap でG4が0になるように調整
+    # G4はstep=-1.5なので: step_from_g4 = (g4_y - cy) / gap
+    # 実際のstep = step_from_g4 - 1.5
+    step_from_g4 = (g4_y - cy) / gap
+    step = step_from_g4 - 1.5
     steps = list(STEP_TO_PITCH.keys())
     nearest = min(steps, key=lambda s: abs(s - step))
     return STEP_TO_PITCH[nearest]
 
 def is_notehead(cnt, gap):
+    """
+    符頭（音符の玉）かどうかを判定する。
+    改善点: 検出漏れを減らすため許容範囲を大幅に緩める。
+    ト音記号・拍子記号の除外は find_clef_end で行う。
+    """
     x, y, w, h = cv2.boundingRect(cnt)
     area = cv2.contourArea(cnt)
+    if area < 4: return False  # 極小のノイズを除外
     aspect = w/h if h > 0 else 0
-    if not (gap*0.4 <= w <= gap*2.5): return False
-    if not (gap*0.3 <= h <= gap*1.6): return False
-    if not (0.5 <= aspect <= 2.8): return False
-    if area < gap*gap*0.15: return False
+
+    # サイズフィルタ（緩め）
+    if not (gap*0.35 <= w <= gap*3.0): return False
+    if not (gap*0.25 <= h <= gap*1.8): return False
+
+    # アスペクト比（緩め）
+    if not (0.4 <= aspect <= 3.5): return False
+
+    # 面積フィルタ
+    if area < gap*gap*0.10: return False
+
+    # 充填率（緩め）
     fill_ratio = area / (w * h) if w*h > 0 else 0
-    if fill_ratio < 0.28: return False
+    if fill_ratio < 0.20: return False
+
+    # 凸性（緩め）
     hull = cv2.convexHull(cnt)
     hull_area = cv2.contourArea(hull)
     if hull_area > 0:
-        if area / hull_area < 0.45: return False
+        if area / hull_area < 0.35: return False
+
     return True
 
 def prepare_binary(img_bytes):
-    """画像バイトからbinary画像と五線を返す"""
+    """
+    画像バイトからbinary画像、五線、輪郭を返す。
+    改善点:
+    - 二値化閾値を適応的に設定（OTSU法併用）
+    - 五線間隔に応じた動的カーネルサイズ
+    - 小さなノイズを除去する前処理を追加
+    """
     nparr = np.frombuffer(img_bytes, np.uint8)
     img_cv = cv2.imdecode(nparr, cv2.IMREAD_GRAYSCALE)
     H, W = img_cv.shape
-    _, binary = cv2.threshold(img_cv, 200, 255, cv2.THRESH_BINARY_INV)
+
+    # 画像の解像度に応じたスケール調整
+    # 標準的な楽譜画像は1000プ1400px程度と想定
+    scale = min(W, H) / 1200.0
+    scale = max(0.5, min(scale, 2.0))
+
+    # 適応的二値化（OTSU + 固定閾値の両方を試す）
+    _, binary_otsu = cv2.threshold(img_cv, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    _, binary_fixed = cv2.threshold(img_cv, 180, 255, cv2.THRESH_BINARY_INV)
+    # 両方のORを取る（どちらかで検出できればOK）
+    binary = cv2.bitwise_or(binary_otsu, binary_fixed)
+
     treble_staves = detect_staves(binary, W)
-    # 符頭抽出用クリーン画像
-    hk = cv2.getStructuringElement(cv2.MORPH_RECT, (50, 1))
+
+    # 五線間隔を推定（動的カーネルサイズの基準）
+    if treble_staves:
+        gaps_all = []
+        for stave in treble_staves:
+            for j in range(4):
+                gaps_all.append(stave[j+1] - stave[j])
+        avg_gap = int(np.median(gaps_all))
+    else:
+        avg_gap = max(8, int(H / 60))
+
+    # 五線を除去（五線間隔の1.5倍以上の横線）
+    hk_len = max(30, int(W * 0.25))
+    hk = cv2.getStructuringElement(cv2.MORPH_RECT, (hk_len, 1))
     hl = cv2.morphologyEx(binary, cv2.MORPH_OPEN, hk)
     bn = cv2.subtract(binary, hl)
-    vk = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 20))
+
+    # 符幹を除去（五線間隔の2.5倍以上の縦線）
+    vk_len = max(15, int(avg_gap * 2.5))
+    vk = cv2.getStructuringElement(cv2.MORPH_RECT, (1, vk_len))
     vl = cv2.morphologyEx(bn, cv2.MORPH_OPEN, vk)
     bn = cv2.subtract(bn, vl)
-    bk = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 1))
+
+    # 梁（ビーム）を除去（五線間隔の1.2倍以上の横線）
+    bk_len = max(10, int(avg_gap * 1.2))
+    bk = cv2.getStructuringElement(cv2.MORPH_RECT, (bk_len, 1))
     bl = cv2.morphologyEx(bn, cv2.MORPH_OPEN, bk)
     bn_clean = cv2.subtract(bn, bl)
+
+    # 小さなノイズを除去（モルフォロジークロージング）
+    kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    bn_clean = cv2.morphologyEx(bn_clean, cv2.MORPH_CLOSE, kernel_close)
+
     contours, _ = cv2.findContours(bn_clean, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    return binary, treble_staves, contours, H, W
+    return binary, treble_staves, contours, H, W, avg_gap
 
 def extract_used_pitches_from_page(img_bytes):
     """1ページ分の画像から使用音MIDIセットを抽出"""
-    binary, treble_staves, contours, H, W = prepare_binary(img_bytes)
+    binary, treble_staves, contours, H, W, avg_gap = prepare_binary(img_bytes)
     if not treble_staves:
         return set()
     used_midi = set()
     for si, stave in enumerate(treble_staves):
-        clef_end = find_clef_end(stave, binary, W)
         gap = np.mean([stave[j+1]-stave[j] for j in range(4)])
+        clef_end = find_clef_end(stave, binary, W, min_ratio=0.12)
         y_top = 0 if si == 0 else (treble_staves[si-1][4]+stave[0])//2
         y_bot = H if si == len(treble_staves)-1 else (stave[4]+treble_staves[si+1][0])//2
         for cnt in contours:
@@ -339,16 +414,19 @@ def process_single_page(img_bytes, tuning_name, transpose, font_size, add_table=
     add_table: 画像下部に調弦表を追加（広いバー形式）
     add_table_top: 画像上部（先頭）に調弦表を追加（p1用）
     """
-    binary, treble_staves, contours, H, W = prepare_binary(img_bytes)
+    binary, treble_staves, contours, H, W, avg_gap = prepare_binary(img_bytes)
     if not treble_staves:
         return None, 0
 
     midi_map = build_midi_map(tuning_name, transpose)
     font = get_font(font_size)
 
+    # p1（調弦表付き）は拍子記号があるため幅を広めに除外、p2以降は狭め
+    clef_min_ratio = 0.20 if add_table_top else 0.12
+
     notes = []
     for si, stave in enumerate(treble_staves):
-        clef_end = find_clef_end(stave, binary, W)
+        clef_end = find_clef_end(stave, binary, W, min_ratio=clef_min_ratio)
         gap = np.mean([stave[j+1]-stave[j] for j in range(4)])
         y_top = 0 if si == 0 else (treble_staves[si-1][4]+stave[0])//2
         y_bot = H if si == len(treble_staves)-1 else (stave[4]+treble_staves[si+1][0])//2
