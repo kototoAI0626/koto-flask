@@ -267,8 +267,14 @@ def process_image(img_bytes, tuning_name, transpose=0, font_size=20, auto_sugges
 
     notes.sort(key=lambda n: (n['stave'], n['x']))
 
-    # フォント
+    # フォント（PythonAnywhere対応: IPAフォント優先）
     font_paths = [
+        '/usr/share/fonts/opentype/ipaexfont-mincho/ipaexm.ttf',
+        '/usr/share/fonts/opentype/ipafont-mincho/ipamp.ttf',
+        '/usr/share/fonts/opentype/ipafont-mincho/ipam.ttf',
+        '/usr/share/fonts/opentype/ipaexfont-gothic/ipaexg.ttf',
+        '/usr/share/fonts/truetype/fonts-japanese-mincho.ttf',
+        '/usr/share/fonts/truetype/fonts-japanese-gothic.ttf',
         '/usr/share/fonts/opentype/noto/NotoSerifCJK-Bold.ttc',
         '/usr/share/fonts/truetype/noto/NotoSerifCJK-Bold.ttc',
     ]
