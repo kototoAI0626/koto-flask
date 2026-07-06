@@ -271,6 +271,13 @@ def remove_non_noteheads(binary, treble_staves, avg_gap, W):
                 if 0 <= yy < H:
                     result[yy, :] = 0
 
+    # 五線除去後の残骸（短い水平線）を追加除去
+    # 五線間隔の0.3倍以上の水平線を消す（符頭より短い横線を除去）
+    stub_len = max(int(avg_gap * 0.3), 4)
+    stub_k = cv2.getStructuringElement(cv2.MORPH_RECT, (stub_len, 1))
+    stub_mask = cv2.morphologyEx(result, cv2.MORPH_OPEN, stub_k)
+    result = cv2.subtract(result, stub_mask)
+
     # 符幹を除去（縦線、五線間隔の2倍以上）
     vk_len = max(int(avg_gap * 2.0), 20)
     vk = cv2.getStructuringElement(cv2.MORPH_RECT, (1, vk_len))
