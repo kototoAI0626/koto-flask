@@ -92,6 +92,92 @@ def get_tuning_display(pattern_name, root_midi):
         result.append({'string': STRING_KANJI[i], 'note': midi_to_note(midi)})
     return result
 
+def generate_free_tuning(used_midi_set):
+    """
+    楽譜の使用音から最適な13弦の配置を生成する（フリー調子）。
+
+    各弦の開放弦をxとすると、x（開放弦）・x+1（弱押し）・x+2（強押し）の3音がカバーされる。
+    13弦×3 = 最大39音をカバー可能。
+
+    返り値: (tuning_list, unmatched_list, coverage_count)
+      tuning_list: [{'midi': int, 'note': str, 'octave': int}, ...] 13弦分
+      unmatched_list: カバーできなかったMIDIノートのリスト
+      coverage_count: カバーできた音の数
+    """
+    if not used_midi_set:
+        # デフォルト：楽調子・壱=G3
+        root = note_to_midi('G', 3)
+        pattern = TUNING_PATTERNS['楽調子']
+        tuning = [{'midi': root+p, 'note': midi_to_note(root+p), 'octave': (root+p)//12-1} for p in pattern]
+        return tuning, [], len(tuning)
+
+    sorted_midi = sorted(used_midi_set)
+    min_midi = min(sorted_midi)
+
+    best_strings = None
+    best_coverage = -1
+    best_unmatched = list(sorted_midi)
+
+    # 壱の音の候補（最低使用音の2半音下〜最低使用音まで）
+    for root in range(max(36, min_midi - 2), min(min_midi + 1, 68)):
+        strings = [root]
+        covered = {root, root+1, root+2}
+        remaining = [m for m in sorted_midi if m not in covered]
+
+        while len(strings) < 13 and remaining:
+            prev = strings[-1]
+            target = remaining[0]
+
+            best_gain = -1
+            best_next = None
+
+            for next_midi in range(prev + 1, min(prev + 8, target + 3)):
+                new_covered = {next_midi, next_midi+1, next_midi+2}
+                gain = len(new_covered & set(remaining))
+                if gain > best_gain or (gain == best_gain and best_next is None):
+                    best_gain = gain
+                    best_next = next_midi
+
+            if best_next is None:
+                best_next = min(prev + 1, target)
+
+            strings.append(best_next)
+            new_covered = {best_next, best_next+1, best_next+2}
+            covered |= new_covered
+            remaining = [m for m in remaining if m not in covered]
+
+        # 残りの弦を埋める
+        while len(strings) < 13:
+            strings.append(strings[-1] + 2)
+
+        # カバー率を計算
+        all_covered = set()
+        for s in strings:
+            all_covered |= {s, s+1, s+2}
+        matched = used_midi_set & all_covered
+
+        if len(matched) > best_coverage:
+            best_coverage = len(matched)
+            best_strings = strings[:13]
+            best_unmatched = sorted(used_midi_set - all_covered)
+
+    if best_strings is None:
+        best_strings = list(range(min_midi, min_midi + 13))
+
+    tuning = [{'midi': m, 'note': midi_to_note(m), 'octave': m//12-1} for m in best_strings]
+    return tuning, best_unmatched, best_coverage
+
+def build_midi_map_from_free_tuning(tuning, transpose=0):
+    """フリー調子の調弦マップを構範する"""
+    m = {}
+    for i, t in enumerate(tuning):
+        midi = t['midi']
+        base = midi - transpose
+        m[base]   = (STRING_KANJI[i], '')
+        m[base+1] = (STRING_KANJI[i], '△')
+        m[base+2] = (STRING_KANJI[i], '▲')
+    return m
+
 def suggest_tuning_smart(used_midi_set):
     """
     全ページの使用音から最適な（調子名, 壱のMIDI）を提案する。
@@ -408,8 +494,11 @@ def group_chords(notes):
     return groups
 
 def process_single_page(img_bytes, pattern_name, root_midi, transpose=0, font_size=20,
-                        add_table_top=False):
-    """1ページを処理して箏符付き画像を返す"""
+                        add_table_top=False, free_tuning=None):
+    """
+    1ページを処理して箏符付き画像を返す。
+    free_tuning: フリー調子の場合は[{'midi':int,'note':str,...}]のリストを渡す。
+    """
     orig_img, scaled, treble_staves, binary, scale, avg_gap = prepare_image(img_bytes)
     if not treble_staves:
         return None, 0
@@ -418,7 +507,11 @@ def process_single_page(img_bytes, pattern_name, root_midi, transpose=0, font_si
     clean = remove_non_noteheads(binary, treble_staves, avg_gap, new_W)
     contours, _ = cv2.findContours(clean, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-    midi_map = build_midi_map(pattern_name, root_midi, transpose)
+    # フリー調子または既存調子パターンから調弦マップを構範
+    if free_tuning:
+        midi_map = build_midi_map_from_free_tuning(free_tuning, transpose)
+    else:
+        midi_map = build_midi_map(pattern_name, root_midi, transpose)
     font = get_font(font_size)
 
     notes = []
@@ -487,13 +580,27 @@ def process_single_page(img_bytes, pattern_name, root_midi, transpose=0, font_si
     result_img = img_pil
 
     if add_table_top:
-        result_img = add_tuning_table_top(result_img, pattern_name, root_midi, font_size)
+        # フリー調子または既存調子の調弦表を追加
+        if free_tuning:
+            tuning_display_for_table = [{'string': t.get('string', STRING_KANJI[i]), 'note': t['note']}
+                                        for i, t in enumerate(free_tuning)]
+            result_img = add_tuning_table_top_from_display(
+                result_img, 'カスタム調弦', tuning_display_for_table, font_size
+            )
+        else:
+            result_img = add_tuning_table_top(result_img, pattern_name, root_midi, font_size)
 
     return result_img, drawn
 
 def add_tuning_table_top(img, pattern_name, root_midi, font_size):
-    """画像の上部に調弦表を追加する（p1用）"""
+    """画像の上部に調弦表を追加する（既存調子用）"""
     tuning_display = get_tuning_display(pattern_name, root_midi)
+    root_note = midi_to_note(root_midi)
+    title = f'調弦表 — {pattern_name}（壱={root_note}）'
+    return add_tuning_table_top_from_display(img, title, tuning_display, font_size)
+
+def add_tuning_table_top_from_display(img, title, tuning_display, font_size):
+    """画像の上部に調弦表を追加する（汎用）"""
     W, H = img.size
     table_font_size = max(11, min(font_size, 16))
     tf = get_font(table_font_size)
@@ -506,8 +613,6 @@ def add_tuning_table_top(img, pattern_name, root_midi, font_size):
     table_img = Image.new('RGB', (W, table_h), (248, 244, 236))
     td = ImageDraw.Draw(table_img)
     td.line([(0, table_h-2), (W, table_h-2)], fill=(180, 150, 100), width=2)
-    root_note = midi_to_note(root_midi)
-    title = f'調弦表 — {pattern_name}（壱={root_note}）'
     td.text((padding, padding), title, font=tf_title, fill=(100, 50, 0))
     y0 = title_h
     for i, d in enumerate(tuning_display):
@@ -535,9 +640,12 @@ def index():
 
 @app.route('/analyze_multi', methods=['POST'])
 def analyze_multi():
-    """全ページを分析して最適調弦を提案する"""
+    """全ページを分析して最適調弦を提案する。
+    free_tuning=trueの場合はフリー調子を生成する。
+    """
     try:
         files = request.files.getlist('images')
+        use_free = request.form.get('free_tuning', 'false') == 'true'
         if not files:
             return jsonify({'error': '画像が必要です'}), 400
 
@@ -553,33 +661,68 @@ def analyze_multi():
         if not all_used_midi:
             return jsonify({'error': '五線譜が検出できませんでした'}), 400
 
-        pattern_name, root_midi, unmatched = suggest_tuning_smart(all_used_midi)
-        tuning_display = get_tuning_display(pattern_name, root_midi)
-        root_note = midi_to_note(root_midi)
         used_names = sorted(set(midi_to_note(m) for m in all_used_midi))
-        unmatched_names = sorted(set(midi_to_note(m) for m in unmatched))
 
-        return jsonify({
-            'pattern_name': pattern_name,
-            'root_note': root_note,
-            'root_midi': root_midi,
-            'tuning_display': tuning_display,
-            'used_notes': used_names,
-            'unmatched_notes': unmatched_names,
-            'page_count': page_count,
-        })
+        if use_free:
+            # フリー調子：楽譜から最適な13弦配置を生成
+            free_tuning, unmatched, coverage = generate_free_tuning(all_used_midi)
+            tuning_display = [{'string': t['string'] if 'string' in t else STRING_KANJI[i], 'note': t['note']}
+                              for i, t in enumerate(free_tuning)]
+            # STRING_KANJIを追加
+            for i, t in enumerate(free_tuning):
+                t['string'] = STRING_KANJI[i]
+            tuning_display = [{'string': t['string'], 'note': t['note']} for t in free_tuning]
+            unmatched_names = sorted(set(midi_to_note(m) for m in unmatched))
+            return jsonify({
+                'mode': 'free',
+                'free_tuning': free_tuning,
+                'tuning_display': tuning_display,
+                'used_notes': used_names,
+                'unmatched_notes': unmatched_names,
+                'coverage': coverage,
+                'total_used': len(all_used_midi),
+                'page_count': page_count,
+            })
+        else:
+            # 既存調子パターンから提案
+            pattern_name, root_midi, unmatched = suggest_tuning_smart(all_used_midi)
+            tuning_display = get_tuning_display(pattern_name, root_midi)
+            root_note = midi_to_note(root_midi)
+            unmatched_names = sorted(set(midi_to_note(m) for m in unmatched))
+            return jsonify({
+                'mode': 'preset',
+                'pattern_name': pattern_name,
+                'root_note': root_note,
+                'root_midi': root_midi,
+                'tuning_display': tuning_display,
+                'used_notes': used_names,
+                'unmatched_notes': unmatched_names,
+                'page_count': page_count,
+            })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 @app.route('/process_multi', methods=['POST'])
 def process_multi():
-    """全ページに箏符を付与してページ別に返す"""
+    """全ページに箏符を付与してページ別に返す。
+    free_tuning_jsonがある場合はフリー調子を使用する。
+    """
     try:
+        import json as json_module
         files = request.files.getlist('images')
         pattern_name = request.form.get('pattern_name', '楽調子')
         root_midi = int(request.form.get('root_midi', note_to_midi('G', 3)))
         font_size = int(request.form.get('font_size', 20))
         transpose = int(request.form.get('transpose', 0))
+        free_tuning_json = request.form.get('free_tuning_json', '')
+
+        # フリー調子の場合
+        free_tuning = None
+        if free_tuning_json:
+            try:
+                free_tuning = json_module.loads(free_tuning_json)
+            except:
+                free_tuning = None
 
         if not files:
             return jsonify({'error': '画像が必要です'}), 400
@@ -591,7 +734,8 @@ def process_multi():
             if not img_bytes: continue
             add_table_top = (i == 0)
             result_img, note_count = process_single_page(
-                img_bytes, pattern_name, root_midi, transpose, font_size, add_table_top
+                img_bytes, pattern_name, root_midi, transpose, font_size, add_table_top,
+                free_tuning=free_tuning
             )
             if result_img is None:
                 results.append(None)
@@ -603,7 +747,19 @@ def process_multi():
             total_notes += note_count
 
         tr_str = f'（移調{transpose:+d}半音）' if transpose != 0 else ''
-        root_note = midi_to_note(root_midi)
+
+        # 調弦表示用データを準備
+        if free_tuning:
+            for i, t in enumerate(free_tuning):
+                if 'string' not in t:
+                    t['string'] = STRING_KANJI[i]
+            tuning_disp = [{'string': t['string'], 'note': t['note']} for t in free_tuning]
+            pattern_label = 'カスタム調弦'
+            root_note = free_tuning[0]['note'] if free_tuning else '?'
+        else:
+            tuning_disp = get_tuning_display(pattern_name, root_midi)
+            pattern_label = pattern_name
+            root_note = midi_to_note(root_midi)
 
         if len([r for r in results if r is not None]) == 1:
             img_data = next(r for r in results if r is not None)
@@ -612,8 +768,8 @@ def process_multi():
                 'mode': 'single',
                 'image': f'data:image/jpeg;base64,{base64.b64encode(img_data).decode()}',
                 'message': f'{total_notes}個の音符を検出して箏符を付与しました{tr_str}',
-                'tuning_display': get_tuning_display(pattern_name, root_midi),
-                'pattern_name': pattern_name,
+                'tuning_display': tuning_disp,
+                'pattern_name': pattern_label,
                 'root_note': root_note,
             })
 
@@ -632,8 +788,8 @@ def process_multi():
             'images': images_b64,
             'page_count': len(images_b64),
             'message': f'{len(files)}ページ・{total_notes}個の音符を検出して箏符を付与しました{tr_str}',
-            'tuning_display': get_tuning_display(pattern_name, root_midi),
-            'pattern_name': pattern_name,
+            'tuning_display': tuning_disp,
+            'pattern_name': pattern_label,
             'root_note': root_note,
         })
     except Exception as e:

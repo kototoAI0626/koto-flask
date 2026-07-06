@@ -95,9 +95,20 @@ input[type=range]{flex:1;accent-color:var(--gold)}
       <input type="file" id="file-input" accept="image/*" multiple style="display:none" onchange="onFile(event)">
       <div class="page-list" id="page-list"></div>
       <div class="page-count" id="page-count"></div>
-      <button class="analyze-btn" id="analyze-btn" onclick="analyzeScore()" disabled>
+      <button class="analyze-btn" id="analyze-btn" onclick="analyzeScore(false)" disabled>
         🔍 全ページを分析して調弦を自動提案
       </button>
+      <button class="analyze-btn" id="free-analyze-btn" onclick="analyzeScore(true)" disabled
+              style="background:#0e0a1a;border-color:#5a2a8a;color:#c08be0;margin-top:6px">
+        ✨ 楽譜から最適調弦を自動生成（フリー調子）
+      </button>
+      <!-- フリー調子使用中インジケーター -->
+      <div id="free-mode-indicator" style="display:none;margin-top:8px;padding:6px 10px;
+           background:#1a0a2a;border:1px solid #5a2a8a;border-radius:3px;font-size:11px;color:#c08be0">
+        ✨ カスタム調弦を使用中—「調子と壱の音」の選択は無効化されます
+        <button onclick="clearFreeTuning()" style="margin-left:8px;padding:2px 8px;background:transparent;
+                border:1px solid #5a2a8a;border-radius:3px;color:#c08be0;cursor:pointer;font-size:11px">リセット</button>
+      </div>
       <div class="suggest-box" id="suggest-box">
         <div class="suggest-title">▶ 自動提案</div>
         <div class="suggest-name" id="suggest-name">—</div>
@@ -174,6 +185,7 @@ input[type=range]{flex:1;accent-color:var(--gold)}
 <script>
 let currentFiles = [], patternName = '楽調子', rootMidi = 55, transposeVal = 0;
 let pageImages = [];
+let freeTuningData = null;  // フリー調子データ
 
 // 壱の音の候補（C3〜B3）
 const ROOT_NOTES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
@@ -215,9 +227,12 @@ function addFiles(files) {
   currentFiles.sort((a, b) => a.name.localeCompare(b.name, undefined, {numeric: true}));
   renderPageList();
   document.getElementById('convert-btn').disabled = false;
-  document.getElementById('analyze-btn').disabled = false;
-  document.getElementById('suggest-box').style.display = 'none';
-}
+      document.getElementById('analyze-btn').disabled = false;
+      document.getElementById('free-analyze-btn').disabled = false;
+      document.getElementById('suggest-box').style.display = 'none';
+      freeTuningData = null;
+      document.getElementById('free-mode-indicator').style.display = 'none';
+    }
 
 function removeFile(idx) {
   currentFiles.splice(idx, 1);
@@ -225,6 +240,7 @@ function removeFile(idx) {
   if (!currentFiles.length) {
     document.getElementById('convert-btn').disabled = true;
     document.getElementById('analyze-btn').disabled = true;
+    document.getElementById('free-analyze-btn').disabled = true;
   }
 }
 
@@ -283,22 +299,51 @@ function changeTranspose(delta) {
 }
 function resetTranspose() { transposeVal = 0; document.getElementById('tr-display').textContent = '0'; }
 
-async function analyzeScore() {
+function clearFreeTuning() {
+  freeTuningData = null;
+  document.getElementById('free-mode-indicator').style.display = 'none';
+  document.getElementById('suggest-box').style.display = 'none';
+}
+
+async function analyzeScore(useFree = false) {
   if (!currentFiles.length) return;
-  const btn = document.getElementById('analyze-btn');
+  const btn = useFree
+    ? document.getElementById('free-analyze-btn')
+    : document.getElementById('analyze-btn');
   btn.disabled = true;
-  btn.textContent = `🔍 ${currentFiles.length}ページを分析中...`;
+  btn.textContent = useFree ? `✨ ${currentFiles.length}ページを分析中...` : `🔍 ${currentFiles.length}ページを分析中...`;
   try {
     const fd = new FormData();
     for (const f of currentFiles) fd.append('images', f);
+    if (useFree) fd.append('free_tuning', 'true');
     const res = await fetch('/analyze_multi', { method: 'POST', body: fd });
     const data = await res.json();
     if (data.error) { alert('分析エラー: ' + data.error); return; }
 
     const box = document.getElementById('suggest-box');
     box.style.display = 'block';
-    document.getElementById('suggest-name').textContent =
-      `推奨: ${data.pattern_name}（壱=${data.root_note}）`;
+
+    if (data.mode === 'free') {
+      freeTuningData = data.free_tuning;
+      const coverPct = data.total_used > 0 ? Math.round(100*data.coverage/data.total_used) : 100;
+      document.getElementById('suggest-name').textContent =
+        `カスタム調弦（壱=${data.free_tuning[0]?.note || '?'}） カバー率: ${coverPct}%`;
+      document.getElementById('free-mode-indicator').style.display = 'block';
+    } else {
+      freeTuningData = null;
+      document.getElementById('free-mode-indicator').style.display = 'none';
+      document.getElementById('suggest-name').textContent =
+        `推奨: ${data.pattern_name}（壱=${data.root_note}）`;
+      patternName = data.pattern_name;
+      rootMidi = data.root_midi;
+      document.querySelectorAll('.pattern-btn').forEach(b => {
+        b.classList.toggle('active', b.textContent === data.pattern_name);
+      });
+      document.querySelectorAll('.root-btn').forEach(b => {
+        b.classList.toggle('active', b.textContent === data.root_note);
+      });
+      await updateTuningDisplay();
+    }
 
     const grid = document.getElementById('suggest-tuning-grid');
     grid.innerHTML = data.tuning_display.map(t =>
@@ -312,25 +357,11 @@ async function analyzeScore() {
     } else {
       warn.style.display = 'none';
     }
-
-    // 自動選択
-    patternName = data.pattern_name;
-    rootMidi = data.root_midi;
-    document.querySelectorAll('.pattern-btn').forEach(b => {
-      if (b.textContent === data.pattern_name) b.classList.add('active');
-      else b.classList.remove('active');
-    });
-    const rootNote = data.root_note;
-    document.querySelectorAll('.root-btn').forEach(b => {
-      if (b.textContent === rootNote) b.classList.add('active');
-      else b.classList.remove('active');
-    });
-    await updateTuningDisplay();
   } catch(e) {
     alert('通信エラー: ' + e.message);
   } finally {
     btn.disabled = false;
-    btn.textContent = '🔍 全ページを分析して調弦を自動提案';
+    btn.textContent = useFree ? '✨ 楽譜から最適調弦を自動生成' : '🔍 全ページを分析して調弦を自動提案';
   }
 }
 
@@ -351,6 +382,9 @@ async function convert() {
     fd.append('root_midi', rootMidi);
     fd.append('font_size', document.getElementById('font-size').value);
     fd.append('transpose', transposeVal);
+    if (freeTuningData) {
+      fd.append('free_tuning_json', JSON.stringify(freeTuningData));
+    }
 
     const res = await fetch('/process_multi', { method: 'POST', body: fd });
     const data = await res.json();
