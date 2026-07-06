@@ -219,11 +219,14 @@ def y_to_pitch(cy, stave):
     best_ledger = min(ledger, key=lambda p: abs(p[0]-cy))
     best_ledger_dist = abs(best_ledger[0] - cy)
 
-    # 五線上の音を優先（同距離の場合も五線上を選ぶ）
-    if best_staff_dist <= best_ledger_dist:
-        return best_staff[1]
-    else:
+    # 五線上の音を優先するルール：
+    # 1. 五線上の音が加線の音より近い場合 → 五線上を選ぶ
+    # 2. 加線の音が明らかに近い場合（五線上より2px以上近い）→ 加線を選ぶ
+    # 3. 同距離または五線上が少し遠い場合 → 五線上を優先
+    if best_ledger_dist < best_staff_dist - 2.0:
         return best_ledger[1]
+    else:
+        return best_staff[1]
 
 def prepare_image(img_bytes):
     """
