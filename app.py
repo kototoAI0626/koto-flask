@@ -382,8 +382,9 @@ def remove_non_noteheads(binary, treble_staves, avg_gap, W):
     vk = cv2.getStructuringElement(cv2.MORPH_RECT, (1, vk_len))
     result = cv2.subtract(result, cv2.morphologyEx(result, cv2.MORPH_OPEN, vk))
 
-    # 梁を除去（五線間隔の1.0倍以上の横線）
-    bk_len = max(int(avg_gap * 1.0), 10)
+    # 梁を除去（五線間隔の0.6倍以上の横線）
+    # 注意：大きすぎると符頭も削れるため縚めに設定
+    bk_len = max(int(avg_gap * 0.6), 6)
     bk = cv2.getStructuringElement(cv2.MORPH_RECT, (bk_len, 1))
     result = cv2.subtract(result, cv2.morphologyEx(result, cv2.MORPH_OPEN, bk))
 
@@ -411,7 +412,9 @@ def is_rest(cnt, gap):
     return False
 
 def is_notehead(cnt, gap):
-    """符頭かどうかを判定する（休符を除外）"""
+    """符頭かどうかを判定する（休符を除外）
+    テスト済み最良設定：bk=0.6+fill=0.15+sol=0.40
+    """
     x, y, w, h = cv2.boundingRect(cnt)
     area = cv2.contourArea(cnt)
     if area < 5: return False
@@ -421,12 +424,12 @@ def is_notehead(cnt, gap):
     if not (gap * 0.45 <= w <= gap * 2.2): return False
     if not (gap * 0.35 <= h <= gap * 1.5): return False
     if not (0.55 <= aspect <= 2.2): return False
-    if area < gap * gap * 0.15: return False
+    if area < gap * gap * 0.12: return False  # 緩めた（0.15→ 0.12）
     fill = area / (w * h) if w * h > 0 else 0
-    if fill < 0.22: return False
+    if fill < 0.15: return False  # 緩めた（0.22→0.15）
     hull = cv2.convexHull(cnt)
     hull_area = cv2.contourArea(hull)
-    if hull_area > 0 and area / hull_area < 0.48: return False
+    if hull_area > 0 and area / hull_area < 0.40: return False  # 緩めた（0.48→0.40）
     return True
 
 def get_clef_end(stave, binary, W, is_first_page_first_stave=False):
