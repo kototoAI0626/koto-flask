@@ -326,8 +326,9 @@ async function analyzeScore(useFree = false) {
     if (data.mode === 'free') {
       freeTuningData = data.free_tuning;
       const coverPct = data.total_used > 0 ? Math.round(100*data.coverage/data.total_used) : 100;
+      const keyLabel = data.key_name ? `${data.key_name}・` : '';
       document.getElementById('suggest-name').textContent =
-        `カスタム調弦（壱=${data.free_tuning[0]?.note || '?'}） カバー率: ${coverPct}%`;
+        `${keyLabel}調弦（壱=${data.free_tuning[0]?.note || '?'}） カバー率: ${coverPct}%`;
       document.getElementById('free-mode-indicator').style.display = 'block';
     } else {
       freeTuningData = null;

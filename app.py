@@ -92,6 +92,167 @@ def get_tuning_display(pattern_name, root_midi):
         result.append({'string': STRING_KANJI[i], 'note': midi_to_note(midi)})
     return result
 
+# 調号から調性の音階を定義
+KEY_SIGNATURES_SCALE = {
+    0:  ['C','D','E','F','G','A','B'],
+    1:  ['G','A','B','C','D','E','F#'],
+    2:  ['D','E','F#','G','A','B','C#'],
+    3:  ['A','B','C#','D','E','F#','G#'],
+    4:  ['E','F#','G#','A','B','C#','D#'],
+    5:  ['B','C#','D#','E','F#','G#','A#'],
+    -1: ['F','G','A','A#','C','D','E'],
+    -2: ['A#','C','D','D#','F','G','A'],
+    -3: ['D#','F','G','G#','A#','C','D'],
+    -4: ['G#','A#','C','C#','D#','F','G'],
+}
+KEY_NAMES_MAP = {
+    0: 'C長調', 1: 'G長調', 2: 'D長調', 3: 'A長調',
+    4: 'E長調', 5: 'B長調',
+    -1: 'F長調', -2: 'Bb長調', -3: 'Eb長調', -4: 'Ab長調',
+}
+
+def detect_key_signature(img_bytes_or_path):
+    """
+    楽譜画像から調号（♯・♭の数）を自動検出する。
+    返り値: 整数（正=♯の数、負=♭の数、ゼロ=調号なし）
+    """
+    if isinstance(img_bytes_or_path, str):
+        img = cv2.imread(img_bytes_or_path)
+    else:
+        nparr = np.frombuffer(img_bytes_or_path, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    if img is None:
+        return 0
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    H, W = gray.shape
+    binary = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, 15, 5)
+    hk_len = max(50, W // 8)
+    hk = cv2.getStructuringElement(cv2.MORPH_RECT, (hk_len, 1))
+    h_lines = cv2.morphologyEx(binary, cv2.MORPH_OPEN, hk)
+    row_sums = np.sum(h_lines, axis=1) / 255
+    threshold = W * 0.30
+    line_rows = np.where(row_sums > threshold)[0]
+    if len(line_rows) == 0:
+        return 0
+    groups = []
+    cur = [line_rows[0]]
+    for y in line_rows[1:]:
+        if y - cur[-1] <= 3:
+            cur.append(y)
+        else:
+            groups.append(int(np.mean(cur)))
+            cur = [y]
+    groups.append(int(np.mean(cur)))
+    staves = []
+    i = 0
+    while i + 4 < len(groups):
+        five = groups[i:i+5]
+        gaps = [five[j+1]-five[j] for j in range(4)]
+        avg_gap = np.mean(gaps)
+        max_dev = max(abs(g - avg_gap) for g in gaps)
+        if avg_gap > 3 and max_dev < avg_gap * 0.45:
+            staves.append(five)
+            i += 5
+        else:
+            i += 1
+    treble_staves = staves[::2]
+    if not treble_staves:
+        return 0
+    stave = treble_staves[0]
+    gaps_list = [stave[j+1]-stave[j] for j in range(4)]
+    avg_gap = float(np.mean(gaps_list))
+    # ト音記号の右端を縦線検出で特定
+    y1, y2 = stave[0]-2, stave[4]+2
+    col_sums = np.sum(binary[y1:y2, :], axis=0) / 255
+    vert_threshold = (y2-y1) * 0.6
+    vert_cols = np.where(col_sums > vert_threshold)[0]
+    if len(vert_cols) > 0:
+        first_vert_groups = []
+        cur_g = [vert_cols[0]]
+        for xv in vert_cols[1:]:
+            if xv - cur_g[-1] <= 5:
+                cur_g.append(xv)
+            else:
+                first_vert_groups.append(cur_g)
+                cur_g = [xv]
+        first_vert_groups.append(cur_g)
+        first_vert_end = int(np.mean(first_vert_groups[0])) + 5
+    else:
+        first_vert_end = int(W * 0.05)
+    clef_width = int(avg_gap * 4.5)
+    key_x_start = first_vert_end + clef_width
+    key_x_end = int(W * 0.28)
+    if key_x_end - key_x_start < avg_gap * 2:
+        return 0
+    y_top = max(0, stave[0] - int(avg_gap * 2))
+    y_bot = min(H, stave[4] + int(avg_gap * 2))
+    roi = gray[y_top:y_bot, key_x_start:key_x_end]
+    roi_bin = cv2.adaptiveThreshold(roi, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, 11, 3)
+    roi_h, roi_w = roi_bin.shape
+    if roi_w < 10:
+        return 0
+    hk2 = cv2.getStructuringElement(cv2.MORPH_RECT, (max(10, roi_w//3), 1))
+    staff_mask = cv2.morphologyEx(roi_bin, cv2.MORPH_OPEN, hk2)
+    roi_clean = cv2.subtract(roi_bin, staff_mask)
+    contours, _ = cv2.findContours(roi_clean, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    sharp_count = 0
+    flat_count = 0
+    for cnt in contours:
+        x, y, w, h = cv2.boundingRect(cnt)
+        area = cv2.contourArea(cnt)
+        if area < 3:
+            continue
+        aspect = w / h if h > 0 else 0
+        fill = area / (w * h) if w * h > 0 else 0
+        if h > avg_gap * 3.5:
+            continue  # 拍子記号を除外
+        if (avg_gap * 1.5 <= h <= avg_gap * 3.0 and
+            0.5 <= aspect <= 1.2 and
+            0.15 <= fill <= 0.45):
+            sharp_count += 1
+        elif (avg_gap * 1.5 <= h <= avg_gap * 3.0 and
+              0.3 <= aspect <= 0.7 and
+              fill >= 0.30):
+            flat_count += 1
+    if sharp_count > flat_count:
+        return min(sharp_count, 6)
+    elif flat_count > sharp_count:
+        return -min(flat_count, 4)
+    else:
+        return 0
+
+def generate_scale_tuning(key_signature, min_midi=None):
+    """
+    調号から13弦の調弦を生成する。
+    その調の音階（全音階）の音のみを使って弦を埋める。
+    """
+    scale = KEY_SIGNATURES_SCALE.get(key_signature, KEY_SIGNATURES_SCALE[0])
+    if min_midi is None:
+        min_midi = note_to_midi('E', 4)
+    scale_notes = set(ENHARMONIC.get(n, n) for n in scale)
+    # 壱の音を決定（最低使用音付近の音階の音）
+    best_root = None
+    for root in range(max(36, min_midi - 4), min(min_midi + 5, 68)):
+        root_note = midi_to_note(root)
+        if root_note in scale_notes:
+            best_root = root
+            break
+    if best_root is None:
+        best_root = min_midi
+    # 13弦を音階の音で埋める
+    strings = []
+    current = best_root
+    while len(strings) < 13 and current <= best_root + 36:
+        note = midi_to_note(current)
+        if note in scale_notes:
+            strings.append(current)
+        current += 1
+    while len(strings) < 13:
+        strings.append(strings[-1] + 12)
+    tuning = [{'midi': m, 'note': midi_to_note(m), 'octave': m//12-1, 'string': STRING_KANJI[i]}
+              for i, m in enumerate(strings[:13])]
+    return tuning
+
 def generate_free_tuning(used_midi_set):
     """
     楽譜の使用音から最適な13弦の配置を生成する（フリー調子）。
@@ -654,9 +815,11 @@ def analyze_multi():
 
         all_used_midi = set()
         page_count = 0
+        all_img_bytes = []  # 調号検出用に保存
         for f in files:
             img_bytes = f.read()
             if not img_bytes: continue
+            all_img_bytes.append(img_bytes)
             used = extract_pitches_from_page(img_bytes)
             all_used_midi |= used
             page_count += 1
@@ -667,15 +830,29 @@ def analyze_multi():
         used_names = sorted(set(midi_to_note(m) for m in all_used_midi))
 
         if use_free:
-            # フリー調子：楽譜から最適な13弦配置を生成
-            free_tuning, unmatched, coverage = generate_free_tuning(all_used_midi)
-            tuning_display = [{'string': t['string'] if 'string' in t else STRING_KANJI[i], 'note': t['note']}
-                              for i, t in enumerate(free_tuning)]
-            # STRING_KANJIを追加
+            # 調号検出ベースの調弦生成
+            # 1ページ目の画像から調号を検出
+            key_sig = 0
+            if all_img_bytes:
+                key_sig = detect_key_signature(all_img_bytes[0])
+
+            # 使用音の最低音を基準に壱の音を決定
+            min_midi = min(all_used_midi) if all_used_midi else note_to_midi('E', 4)
+            free_tuning = generate_scale_tuning(key_sig, min_midi)
+
+            # カバー率を計算
+            all_covered = set()
+            for t in free_tuning:
+                m = t['midi']
+                all_covered |= {m, m+1, m+2}
+            coverage = len(all_used_midi & all_covered)
+            unmatched = sorted(all_used_midi - all_covered)
+
             for i, t in enumerate(free_tuning):
                 t['string'] = STRING_KANJI[i]
             tuning_display = [{'string': t['string'], 'note': t['note']} for t in free_tuning]
             unmatched_names = sorted(set(midi_to_note(m) for m in unmatched))
+            key_name = KEY_NAMES_MAP.get(key_sig, f'調号{key_sig:+d}')
             return jsonify({
                 'mode': 'free',
                 'free_tuning': free_tuning,
@@ -685,6 +862,8 @@ def analyze_multi():
                 'coverage': coverage,
                 'total_used': len(all_used_midi),
                 'page_count': page_count,
+                'key_name': key_name,
+                'key_sig': key_sig,
             })
         else:
             # 既存調子パターンから提案
