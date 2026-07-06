@@ -175,38 +175,55 @@ def detect_staff_lines(gray):
             i += 1
     return staves[::2], binary  # ト音記号段のみ
 
-def build_pitch_y_map(stave):
-    """五線の実座標から各音名のY座標マップを構築する"""
-    g01 = stave[1] - stave[0]
-    g12 = stave[2] - stave[1]
-    g23 = stave[3] - stave[2]
-    g34 = stave[4] - stave[3]
-    return {
-        'G3': stave[0] + g01 * 2.5,
-        'A3': stave[0] + g01 * 2,
-        'B3': stave[0] + g01 * 1.5,
-        'C4': stave[0] + g01,
-        'D4': stave[0] + g01 * 0.5,
-        'E4': float(stave[0]),
-        'F4': stave[0] - g01 * 0.5,
-        'G4': float(stave[1]),
-        'A4': stave[1] - g12 * 0.5,
-        'B4': float(stave[2]),
-        'C5': stave[2] - g23 * 0.5,
-        'D5': float(stave[3]),
-        'E5': stave[3] - g34 * 0.5,
-        'F5': float(stave[4]),
-        'G5': stave[4] - g34 * 0.5,
-        'A5': stave[4] - g34,
-        'B5': stave[4] - g34 * 1.5,
-        'C6': stave[4] - g34 * 2,
-        'D6': stave[4] - g34 * 2.5,
-    }
-
 def y_to_pitch(cy, stave):
-    """Y座標から最も近い音名を返す"""
-    pitch_y = build_pitch_y_map(stave)
-    return min(pitch_y.keys(), key=lambda p: abs(pitch_y[p] - cy))
+    """
+    符頭のY座標から音名を正確に判定する。
+
+    各線・各間のY座標を直接計算し、最も近い位置の音名を返す。
+    同距離の場合は五線上の音（線・間）を優先する。
+    """
+    g = [stave[j+1] - stave[j] for j in range(4)]
+
+    # 五線上の音（優先度高）
+    on_staff = [
+        (float(stave[4]),             'F5'),
+        ((stave[3]+stave[4]) / 2.0,   'E5'),
+        (float(stave[3]),             'D5'),
+        ((stave[2]+stave[3]) / 2.0,   'C5'),
+        (float(stave[2]),             'B4'),
+        ((stave[1]+stave[2]) / 2.0,   'A4'),
+        (float(stave[1]),             'G4'),
+        ((stave[0]+stave[1]) / 2.0,   'F4'),
+        (float(stave[0]),             'E4'),
+    ]
+
+    # 加線領域の音（低優先度）
+    ledger = [
+        (stave[4] - g[3]*2.5, 'D6'),
+        (stave[4] - g[3]*2,   'C6'),
+        (stave[4] - g[3]*1.5, 'B5'),
+        (stave[4] - g[3],     'A5'),
+        (stave[4] - g[3]*0.5, 'G5'),
+        (stave[0] + g[0]*0.5, 'D4'),
+        (stave[0] + g[0],     'C4'),
+        (stave[0] + g[0]*1.5, 'B3'),
+        (stave[0] + g[0]*2,   'A3'),
+        (stave[0] + g[0]*2.5, 'G3'),
+    ]
+
+    # 五線上の最近距離
+    best_staff = min(on_staff, key=lambda p: abs(p[0]-cy))
+    best_staff_dist = abs(best_staff[0] - cy)
+
+    # 加線領域の最近距離
+    best_ledger = min(ledger, key=lambda p: abs(p[0]-cy))
+    best_ledger_dist = abs(best_ledger[0] - cy)
+
+    # 五線上の音を優先（同距離の場合も五線上を選ぶ）
+    if best_staff_dist <= best_ledger_dist:
+        return best_staff[1]
+    else:
+        return best_ledger[1]
 
 def prepare_image(img_bytes):
     """
@@ -270,13 +287,6 @@ def remove_non_noteheads(binary, treble_staves, avg_gap, W):
                 yy = y + dy
                 if 0 <= yy < H:
                     result[yy, :] = 0
-
-    # 五線除去後の残骸（短い水平線）を追加除去
-    # 五線間隔の0.3倍以上の水平線を消す（符頭より短い横線を除去）
-    stub_len = max(int(avg_gap * 0.3), 4)
-    stub_k = cv2.getStructuringElement(cv2.MORPH_RECT, (stub_len, 1))
-    stub_mask = cv2.morphologyEx(result, cv2.MORPH_OPEN, stub_k)
-    result = cv2.subtract(result, stub_mask)
 
     # 符幹を除去（縦線、五線間隔の2倍以上）
     vk_len = max(int(avg_gap * 2.0), 20)
