@@ -254,28 +254,64 @@ def prepare_image(img_bytes):
 
     return orig_img, scaled, treble_staves, binary, scale, avg_gap
 
-def remove_non_noteheads(binary, avg_gap, W):
-    """五線・符幹・梁を除去して符頭を残す"""
+def remove_non_noteheads(binary, treble_staves, avg_gap, W):
+    """
+    改良版五線除去。
+    五線のY座標を正確に特定して1〜2px分だけ消す。
+    符頭は五線より太いので形が残る。
+    """
     result = binary.copy()
-    hk_len = max(40, W // 5)
-    hk = cv2.getStructuringElement(cv2.MORPH_RECT, (hk_len, 1))
-    result = cv2.subtract(result, cv2.morphologyEx(result, cv2.MORPH_OPEN, hk))
-    vk_len = max(int(avg_gap * 1.8), 15)
+    H = result.shape[0]
+
+    # 全五線のY座標を収集して消す（±1px）
+    for stave in treble_staves:
+        for y in stave:
+            for dy in range(-1, 2):
+                yy = y + dy
+                if 0 <= yy < H:
+                    result[yy, :] = 0
+
+    # 符幹を除去（縦線、五線間隔の2倍以上）
+    vk_len = max(int(avg_gap * 2.0), 20)
     vk = cv2.getStructuringElement(cv2.MORPH_RECT, (1, vk_len))
     result = cv2.subtract(result, cv2.morphologyEx(result, cv2.MORPH_OPEN, vk))
-    bk_len = max(int(avg_gap * 0.8), 8)
+
+    # 梁を除去（五線間隔の1.0倍以上の横線）
+    bk_len = max(int(avg_gap * 1.0), 10)
     bk = cv2.getStructuringElement(cv2.MORPH_RECT, (bk_len, 1))
     result = cv2.subtract(result, cv2.morphologyEx(result, cv2.MORPH_OPEN, bk))
+
+    # クロージングで符頭を補完
     ck = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
     result = cv2.morphologyEx(result, cv2.MORPH_CLOSE, ck)
+
     return result
 
+def is_rest(cnt, gap):
+    """休符かどうかを判定する（符頭と誤検出しないため）"""
+    x, y, w, h = cv2.boundingRect(cnt)
+    area = cv2.contourArea(cnt)
+    aspect = w / h if h > 0 else 0
+    fill = area / (w * h) if w * h > 0 else 0
+    # 八分休符：細い縦線
+    if aspect < 0.35 and h > gap * 0.5:
+        return True
+    # 全音符・二分音符休符：横長の塗りつぶし長方形
+    if aspect > 2.5 and fill > 0.65 and h < gap * 0.6:
+        return True
+    # 四分休符：複雑な形状（充填率が低い）
+    if fill < 0.15 and area > gap * gap * 0.1:
+        return True
+    return False
+
 def is_notehead(cnt, gap):
-    """符頭かどうかを判定する"""
+    """符頭かどうかを判定する（休符を除外）"""
     x, y, w, h = cv2.boundingRect(cnt)
     area = cv2.contourArea(cnt)
     if area < 5: return False
     aspect = w / h if h > 0 else 0
+    # 休符を除外
+    if is_rest(cnt, gap): return False
     if not (gap * 0.45 <= w <= gap * 2.2): return False
     if not (gap * 0.35 <= h <= gap * 1.5): return False
     if not (0.55 <= aspect <= 2.2): return False
@@ -313,7 +349,7 @@ def extract_pitches_from_page(img_bytes):
         return set()
 
     new_H, new_W = scaled.shape[:2]
-    clean = remove_non_noteheads(binary, avg_gap, new_W)
+    clean = remove_non_noteheads(binary, treble_staves, avg_gap, new_W)
     contours, _ = cv2.findContours(clean, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     used_midi = set()
@@ -359,7 +395,7 @@ def process_single_page(img_bytes, pattern_name, root_midi, transpose=0, font_si
         return None, 0
 
     new_H, new_W = scaled.shape[:2]
-    clean = remove_non_noteheads(binary, avg_gap, new_W)
+    clean = remove_non_noteheads(binary, treble_staves, avg_gap, new_W)
     contours, _ = cv2.findContours(clean, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     midi_map = build_midi_map(pattern_name, root_midi, transpose)
